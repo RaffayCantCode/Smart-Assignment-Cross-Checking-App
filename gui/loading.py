@@ -1,44 +1,61 @@
 """
 gui/loading.py
 
-Simulated "AI processing" screen. Everything here is fake: a QTimer
-ticks a progress value up and swaps status text at thresholds, while
-a small custom-painted widget spins to look like an active scan.
-
-When backend integration happens, `start()` is the one method that
-needs to change - instead of a QTimer driving progress, real
-callbacks/signals from the analysis pipeline would update
-`set_progress()` instead.
+Simulated "AI processing" screen.
+A QTimer ticks a progress value up and swaps status states.
+The visual uses a DualRing with a soft glow and a checklist of stages.
 """
 
-from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QProgressBar, QSizePolicy
-from PySide6.QtGui import QPainter, QPen, QColor, QFont
+from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
+    QSizePolicy, QGraphicsDropShadowEffect, QFrame
+)
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush
 
-from styles.theme import Colors, Fonts
+from styles.theme import Colors, Fonts, Spacing, Icons, IconSize, render_icon, Anim
 
 STATUS_STEPS = [
-    (0, "Preparing assignments..."),
-    (20, "Reading documents..."),
-    (40, "Extracting text..."),
-    (60, "Analyzing content..."),
-    (80, "Comparing similarities..."),
-    (100, "Generating results..."),
+    (0, "Preparing assignments"),
+    (20, "Reading documents"),
+    (40, "Extracting text"),
+    (60, "Analyzing content"),
+    (80, "Comparing similarities"),
+    (100, "Generating results"),
 ]
 
 
-class ScanRing(QWidget):
-    """A simple custom-painted rotating arc, purely decorative."""
+class DualRing(QWidget):
+    """Dual rotating rings with a center icon and subtle glow."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(140, 140)
         self._angle = 0
+        
         self.anim = QPropertyAnimation(self, b"angle")
         self.anim.setStartValue(0)
         self.anim.setEndValue(360)
-        self.anim.setDuration(1400)
+        self.anim.setDuration(Anim.RING)
         self.anim.setLoopCount(-1)
+        
+        # Soft glow effect
+        self.glow = QGraphicsDropShadowEffect()
+        self.glow.setBlurRadius(12)
+        self.glow.setColor(QColor(Colors.ACCENT))
+        self.glow.setOffset(0, 0)
+        self.setGraphicsEffect(self.glow)
+        
+        # Pulse animation on glow
+        self.pulse_anim = QPropertyAnimation(self.glow, b"blurRadius")
+        self.pulse_anim.setStartValue(8)
+        self.pulse_anim.setEndValue(24)
+        self.pulse_anim.setDuration(1000)
+        self.pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
+        self.pulse_anim.setLoopCount(-1)
+
+        # Center icon
+        self.center_icon = render_icon(Icons.LAYERS, Colors.ACCENT, IconSize.XL)
 
     def getAngle(self):
         return self._angle
@@ -51,42 +68,96 @@ class ScanRing(QWidget):
 
     def start(self):
         self.anim.start()
+        self.pulse_anim.start()
 
     def stop(self):
         self.anim.stop()
+        self.pulse_anim.stop()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect().adjusted(10, 10, -10, -10)
+        
+        rect_outer = self.rect().adjusted(10, 10, -10, -10)
+        rect_inner = self.rect().adjusted(24, 24, -24, -24)
 
-        # faint background ring
-        pen_bg = QPen(QColor(Colors.BORDER_LIGHT))
-        pen_bg.setWidth(8)
+        # Background track
+        pen_bg = QPen(QColor(Colors.BORDER))
+        pen_bg.setWidth(6)
         pen_bg.setCapStyle(Qt.RoundCap)
         painter.setPen(pen_bg)
-        painter.drawArc(rect, 0, 360 * 16)
+        painter.drawArc(rect_outer, 0, 360 * 16)
+        
+        # Outer ring
+        pen_outer = QPen(QColor(Colors.ACCENT))
+        pen_outer.setWidth(6)
+        pen_outer.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen_outer)
+        start_angle_outer = int(-self._angle * 16)
+        painter.drawArc(rect_outer, start_angle_outer, 120 * 16)
+        
+        # Inner ring (spins opposite direction)
+        pen_inner = QPen(QColor(Colors.ACCENT_HOVER))
+        pen_inner.setWidth(4)
+        pen_inner.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen_inner)
+        start_angle_inner = int(self._angle * 16)
+        painter.drawArc(rect_inner, start_angle_inner, 90 * 16)
 
-        # rotating accent arc
-        pen_fg = QPen(QColor(Colors.ACCENT))
-        pen_fg.setWidth(8)
-        pen_fg.setCapStyle(Qt.RoundCap)
-        painter.setPen(pen_fg)
-        span = 100 * 16
-        start_angle = int(-self._angle * 16)
-        painter.drawArc(rect, start_angle, span)
+        # Center icon
+        icon_x = (self.width() - self.center_icon.width()) // 2
+        icon_y = (self.height() - self.center_icon.height()) // 2
+        painter.drawPixmap(icon_x, icon_y, self.center_icon)
 
-        # center glyph
-        painter.setPen(QColor(Colors.TEXT_PRIMARY))
-        font = QFont()
-        font.setPointSize(20)
-        painter.setFont(font)
-        painter.drawText(self.rect(), Qt.AlignCenter, "AI")
+
+class StageChecklist(QWidget):
+    """Vertical checklist showing processing stages."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(Spacing.MD)
+        self.layout.setAlignment(Qt.AlignCenter)
+        
+        self.rows = []
+        for _, text in STATUS_STEPS:
+            row = self._create_row(text)
+            self.rows.append(row)
+            self.layout.addLayout(row["layout"])
+            
+    def _create_row(self, text: str):
+        layout = QHBoxLayout()
+        layout.setSpacing(Spacing.MD)
+        
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(render_icon(Icons.CLOCK, Colors.TEXT_MUTED, IconSize.MD))
+        layout.addWidget(icon_lbl)
+        
+        text_lbl = QLabel(text)
+        text_lbl.setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};")
+        layout.addWidget(text_lbl)
+        
+        return {"layout": layout, "icon": icon_lbl, "text": text_lbl}
+        
+    def update_progress(self, current_stage_idx: int):
+        for i, row in enumerate(self.rows):
+            if i < current_stage_idx:
+                # Completed
+                row["icon"].setPixmap(render_icon(Icons.CHECK, Colors.SUCCESS, IconSize.MD))
+                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_SECONDARY};")
+            elif i == current_stage_idx:
+                # In progress
+                row["icon"].setPixmap(render_icon(Icons.REFRESH, Colors.ACCENT, IconSize.MD))
+                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 500; color: {Colors.TEXT_PRIMARY};")
+            else:
+                # Pending
+                row["icon"].setPixmap(render_icon(Icons.CLOCK, Colors.TEXT_MUTED, IconSize.MD))
+                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};")
 
 
 class LoadingScreen(QWidget):
 
-    finished = Signal(dict)  # forwards the same payload it was started with
+    finished = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -94,49 +165,49 @@ class LoadingScreen(QWidget):
         self._progress = 0
 
         self.timer = QTimer(self)
-        self.timer.setInterval(160)  # ms per tick -> full run ~ a few seconds
+        self.timer.setInterval(160)
         self.timer.timeout.connect(self._tick)
 
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignCenter)
-        root.setSpacing(24)
+        root.setSpacing(Spacing.XXXL)
 
-        self.ring = ScanRing()
-        root.addWidget(self.ring, alignment=Qt.AlignCenter)
+        # -- Top visual ----------------------------------------------------
+        top_area = QVBoxLayout()
+        top_area.setAlignment(Qt.AlignCenter)
+        top_area.setSpacing(Spacing.MD)
+        
+        self.ring = DualRing()
+        top_area.addWidget(self.ring, alignment=Qt.AlignCenter)
 
         self.percent_label = QLabel("0%")
         self.percent_label.setAlignment(Qt.AlignCenter)
         self.percent_label.setStyleSheet(
-            f"font-size: {Fonts.H1}px; font-weight: 800; color: {Colors.TEXT_PRIMARY};"
+            f"font-size: {Fonts.SIZE_DISPLAY}px; font-weight: 700; color: {Colors.TEXT_PRIMARY};"
         )
-        root.addWidget(self.percent_label)
-
-        self.status_label = QLabel(STATUS_STEPS[0][1])
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet(
-            f"font-size: {Fonts.BODY}px; color: {Colors.TEXT_SECONDARY};"
-        )
-        root.addWidget(self.status_label)
-
+        top_area.addWidget(self.percent_label)
+        
+        root.addLayout(top_area)
+        
+        # -- Progress bar ---------------------------------------------------
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFixedWidth(420)
+        self.progress_bar.setFixedWidth(400)
         self.progress_bar.setTextVisible(False)
         root.addWidget(self.progress_bar, alignment=Qt.AlignCenter)
 
-        hint = QLabel("This is a simulated preview - no files are actually being analyzed yet.")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet(f"font-size: {Fonts.SMALL}px; color: {Colors.TEXT_MUTED};")
-        root.addWidget(hint)
+        # -- Checklist -------------------------------------------------------
+        self.checklist = StageChecklist()
+        root.addWidget(self.checklist, alignment=Qt.AlignCenter)
 
     def start(self, payload: dict):
-        """Kick off the fake processing animation."""
         self._payload = payload
         self._progress = 0
         self.percent_label.setText("0%")
-        self.status_label.setText(STATUS_STEPS[0][1])
         self.progress_bar.setValue(0)
+        self.checklist.update_progress(0)
+        
         self.ring.start()
         self.timer.start()
 
@@ -145,11 +216,13 @@ class LoadingScreen(QWidget):
         self.progress_bar.setValue(self._progress)
         self.percent_label.setText(f"{self._progress}%")
 
-        current_status = STATUS_STEPS[0][1]
-        for threshold, text in STATUS_STEPS:
+        # Find current stage index
+        current_idx = 0
+        for i, (threshold, _) in enumerate(STATUS_STEPS):
             if self._progress >= threshold:
-                current_status = text
-        self.status_label.setText(current_status)
+                current_idx = i
+
+        self.checklist.update_progress(current_idx)
 
         if self._progress >= 100:
             self.timer.stop()
