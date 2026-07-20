@@ -6,7 +6,7 @@ A QTimer ticks a progress value up and swaps status states.
 The visual uses a DualRing with a soft glow and a checklist of stages.
 """
 
-from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve, QThread
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
     QSizePolicy, QGraphicsDropShadowEffect, QFrame
@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush
 
 from styles.theme import Colors, Fonts, Spacing, Icons, IconSize, render_icon, Anim
+from backend.assignment_analyzer import AssignmentAnalyzer
+
 
 STATUS_STEPS = [
     (0, "Preparing assignments"),
@@ -23,6 +25,49 @@ STATUS_STEPS = [
     (80, "Comparing similarities"),
     (100, "Generating results"),
 ]
+
+class AnalysisWorker(QThread):
+    progress_updated = Signal(int, str)
+    analysis_finished = Signal(dict)
+
+    def __init__(self, payload: dict, parent=None):
+        super().__init__(parent)
+        self.payload = payload
+
+    def run(self):
+        try:
+            analyzer = AssignmentAnalyzer(progress_callback=self.progress_updated.emit)
+            
+            mode = self.payload.get("mode", "one_to_one")
+            files = self.payload.get("files", {})
+            
+            if mode == "one_to_one":
+                file_path_1 = files.get("student_1")
+                file_path_2 = files.get("student_2")
+                if not file_path_1 or not file_path_2:
+                    result = analyzer._error_result("Missing files for one-to-one comparison.")
+                else:
+                    result = analyzer.analyze_one_to_one(file_path_1, file_path_2)
+            else:
+                result = analyzer._error_result(f"Mode {mode} not yet supported by backend.")
+                
+            self.analysis_finished.emit(result)
+        except Exception as e:
+            import traceback
+            err_msg = f"Worker thread crashed: {e}\n{traceback.format_exc()}"
+            # Ensure it conforms to the expected result dictionary
+            err_result = {
+                "score": 0,
+                "risk_level": "Error",
+                "risk_color": "#E63946",
+                "matching_sections": 0,
+                "similar_paragraphs": 0,
+                "processing_time": "0.0s",
+                "confidence_score": "0%",
+                "summary": err_msg,
+                "error": True
+            }
+            self.analysis_finished.emit(err_result)
 
 
 class DualRing(QWidget):
@@ -38,21 +83,6 @@ class DualRing(QWidget):
         self.anim.setEndValue(360)
         self.anim.setDuration(Anim.RING)
         self.anim.setLoopCount(-1)
-        
-        # Soft glow effect
-        self.glow = QGraphicsDropShadowEffect()
-        self.glow.setBlurRadius(12)
-        self.glow.setColor(QColor(Colors.ACCENT))
-        self.glow.setOffset(0, 0)
-        self.setGraphicsEffect(self.glow)
-        
-        # Pulse animation on glow
-        self.pulse_anim = QPropertyAnimation(self.glow, b"blurRadius")
-        self.pulse_anim.setStartValue(8)
-        self.pulse_anim.setEndValue(24)
-        self.pulse_anim.setDuration(1000)
-        self.pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
-        self.pulse_anim.setLoopCount(-1)
 
         # Center icon
         self.center_icon = render_icon(Icons.LAYERS, Colors.ACCENT, IconSize.XL)
@@ -68,11 +98,9 @@ class DualRing(QWidget):
 
     def start(self):
         self.anim.start()
-        self.pulse_anim.start()
 
     def stop(self):
         self.anim.stop()
-        self.pulse_anim.stop()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -163,10 +191,7 @@ class LoadingScreen(QWidget):
         super().__init__(parent)
         self._payload = {}
         self._progress = 0
-
-        self.timer = QTimer(self)
-        self.timer.setInterval(160)
-        self.timer.timeout.connect(self._tick)
+        self._worker = None
 
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignCenter)
@@ -209,22 +234,30 @@ class LoadingScreen(QWidget):
         self.checklist.update_progress(0)
         
         self.ring.start()
-        self.timer.start()
+        
+        # Start real background worker
+        self._worker = AnalysisWorker(payload)
+        self._worker.progress_updated.connect(self._on_progress_update)
+        self._worker.analysis_finished.connect(self._on_analysis_finished)
+        self._worker.start()
 
-    def _tick(self):
-        self._progress = min(100, self._progress + 4)
+    def _on_progress_update(self, percent: int, message: str):
+        self._progress = percent
         self.progress_bar.setValue(self._progress)
         self.percent_label.setText(f"{self._progress}%")
 
-        # Find current stage index
+        # Find current stage index based on threshold
         current_idx = 0
-        for i, (threshold, _) in enumerate(STATUS_STEPS):
+        for i, (threshold, text) in enumerate(STATUS_STEPS):
             if self._progress >= threshold:
                 current_idx = i
 
         self.checklist.update_progress(current_idx)
 
-        if self._progress >= 100:
-            self.timer.stop()
-            self.ring.stop()
-            self.finished.emit(self._payload)
+    def _on_analysis_finished(self, result: dict):
+        self.ring.stop()
+        self.progress_bar.setValue(100)
+        self.percent_label.setText("100%")
+        self.checklist.update_progress(len(STATUS_STEPS))
+        self.finished.emit(result)
+

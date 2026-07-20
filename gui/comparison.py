@@ -165,7 +165,7 @@ class UploadCard(QFrame):
     file_selected = Signal(str, str)   # (slot_id, file_path)
     file_cleared = Signal(str)         # (slot_id)
 
-    ACCEPTED_EXTENSIONS = (".pdf", ".docx", ".doc", ".txt")
+    ACCEPTED_EXTENSIONS = (".pdf", ".docx")
 
     def __init__(self, slot_id: str, label: str, parent=None):
         super().__init__(parent)
@@ -239,7 +239,18 @@ class UploadCard(QFrame):
         urls = event.mimeData().urls()
         if urls:
             path = urls[0].toLocalFile()
-            self._apply_file(path)
+            ext = path.lower().split('.')[-1]
+            if f".{ext}" in self.ACCEPTED_EXTENSIONS:
+                self._apply_file(path)
+            else:
+                self.file_path = None
+                self.status_label.setText("Unsupported file type!")
+                self.hint_label.setText("Only .pdf and .docx allowed")
+                self.icon_label.setPixmap(render_icon(Icons.SHIELD_ALERT, Colors.DANGER, IconSize.LG))
+                self.drop_zone.setStyleSheet(f"#DropZone {{ background-color: {Colors.BG_SURFACE_ALT}; border: 1px solid {Colors.DANGER}; border-radius: {Radius.LG}px; }}")
+                self.browse_button.setVisible(True)
+                self.clear_button.setVisible(False)
+                self.file_cleared.emit(self.slot_id)
 
     def _set_hover(self, hovering: bool):
         if self.has_file():
@@ -251,7 +262,7 @@ class UploadCard(QFrame):
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Assignment File", "",
-            "Documents (*.pdf *.docx *.doc *.txt);;All Files (*)"
+            "Supported Documents (*.pdf *.docx)"
         )
         if path:
             self._apply_file(path)

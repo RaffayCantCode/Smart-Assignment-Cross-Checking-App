@@ -103,7 +103,8 @@ class UploadScreen(QWidget):
         if mode == "one_to_one":
             self.title_label.setText("One-to-One Cross Checking")
             self.subtitle_label.setText(
-                "Compare one student's assignment with another student's assignment."
+                "Compare one student's assignment with another student's assignment. "
+                "(Supported formats: .pdf, .docx)"
             )
             
             row = QHBoxLayout()
@@ -120,7 +121,8 @@ class UploadScreen(QWidget):
         else:  # one_to_many
             self.title_label.setText("One-to-Many Cross Checking")
             self.subtitle_label.setText(
-                "Compare one assignment against multiple student assignments."
+                "Compare one assignment against multiple student assignments. "
+                "(Supported formats: .pdf, .docx)"
             )
 
             main_label = QLabel("Main Assignment")

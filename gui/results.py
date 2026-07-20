@@ -16,35 +16,6 @@ from PySide6.QtGui import QPainter, QPen, QColor, QFont
 from styles.theme import Colors, Fonts, Spacing, Radius, Anim, Icons, IconSize, render_icon
 
 
-def _fake_result_for(payload: dict) -> dict:
-    """Generate deterministic-looking fake analysis results."""
-    random.seed(len(str(payload.get("files", {}))) or 1)
-    score = random.randint(35, 96)
-
-    if score >= 75:
-        risk_level, risk_color = "High Similarity", Colors.HIGH_RISK
-    elif score >= 45:
-        risk_level, risk_color = "Moderate Similarity", Colors.MEDIUM_RISK
-    else:
-        risk_level, risk_color = "Low Similarity", Colors.LOW_RISK
-
-    return {
-        "score": score,
-        "risk_level": risk_level,
-        "risk_color": risk_color,
-        "matching_sections": random.randint(3, 14),
-        "similar_paragraphs": random.randint(2, 20),
-        "processing_time": f"{random.uniform(1.2, 4.8):.1f}s",
-        "confidence_score": f"{random.randint(80, 99)}%",
-        "summary": (
-            "Both assignments contain highly similar concepts and multiple matching "
-            "sections. Manual review is recommended."
-        ) if score >= 75 else (
-            "Some overlapping phrasing and structure were detected, but overall the "
-            "assignments appear largely independent."
-        ),
-    }
-
 
 class ScoreRingWidget(QWidget):
     """Custom painted radial progress ring for the similarity score."""
@@ -275,22 +246,33 @@ class ResultsScreen(QWidget):
         QMessageBox.information(self, "Detailed Report", "Detailed report view will be available in a future update.")
 
 
-    def display_results(self, payload: dict):
-        result = _fake_result_for(payload)
-
+    def display_results(self, result: dict):
+        is_error = result.get("error", False)
+        
         # Set risk badge
-        self.risk_badge.setText(result["risk_level"])
+        self.risk_badge.setText(result.get("risk_level", "Unknown"))
+        risk_color = result.get("risk_color", Colors.BORDER)
+        
         self.risk_badge.setStyleSheet(f"""
-            background-color: {result['risk_color']}20; /* 20 is low alpha hex */
-            color: {result['risk_color']};
-            border: 1px solid {result['risk_color']}40;
+            background-color: {risk_color}20; 
+            color: {risk_color};
+            border: 1px solid {risk_color}40;
             border-radius: {Radius.PILL}px;
             font-size: {Fonts.SIZE_BODY}px;
             font-weight: 600;
         """)
 
-        self.summary_text.setText(result["summary"])
-        self.score_ring.set_score(result["score"], result["risk_color"])
+        self.summary_text.setText(result.get("summary", ""))
+        
+        if is_error:
+            self.score_ring.setVisible(False)
+            self.generate_report_btn.setVisible(False)
+            self.detailed_report_btn.setVisible(False)
+        else:
+            self.score_ring.setVisible(True)
+            self.generate_report_btn.setVisible(True)
+            self.detailed_report_btn.setVisible(True)
+            self.score_ring.set_score(result.get("score", 0), risk_color)
 
         # clear and rebuild info cards
         self._info_cards.clear()
@@ -299,11 +281,15 @@ class ResultsScreen(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        if is_error:
+            # Don't show info cards if there's an error
+            return
+
         cards_data = [
-            (Icons.FILE, "Matching Sections", str(result["matching_sections"])),
-            (Icons.LAYERS, "Similar Paragraphs", str(result["similar_paragraphs"])),
-            (Icons.CLOCK, "Processing Time", result["processing_time"]),
-            (Icons.CHECK, "Confidence", result["confidence_score"]),
+            (Icons.FILE, "Matching Sections", str(result.get("matching_sections", 0))),
+            (Icons.LAYERS, "Similar Paragraphs", str(result.get("similar_paragraphs", 0))),
+            (Icons.CLOCK, "Processing Time", result.get("processing_time", "0s")),
+            (Icons.CHECK, "Confidence", result.get("confidence_score", "0%")),
         ]
         
         for i, (icon_svg, title, value) in enumerate(cards_data):
