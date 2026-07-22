@@ -133,6 +133,7 @@ class ComparisonResult:
             "confidence_score":  f"{int(self.statistics.confidence * 100)}%",
             "summary":           self.summary,
             "error":             self.error,
+            "raw_result":        self,
         }
 
     @classmethod
