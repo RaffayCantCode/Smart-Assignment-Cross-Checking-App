@@ -1,123 +1,150 @@
-"""
-backend/assignment_analyzer.py
-
-Coordinates the processing pipeline for checking assignments.
-"""
-
 import time
 import re
+import dataclasses
+import os
 from typing import Callable, Optional
 
-from .file_loader import extract_text_from_file
-from .text_preprocessing import clean_text, extract_paragraphs
-from .similarity_engine import SimilarityEngine
+from .extraction import DocumentLoader
+from .engines import EngineRegistry, EngineConfig
+from .domain.document import Document, DocumentSource, DocumentContent, ExtractionInfo, ExtractionMethod
+from .domain.comparison import ComparisonResult, MetadataWarning
 from .utils import AssignmentAnalyzerError
 
+ProgressCallback = Callable[[int, str], None]
 
 class AssignmentAnalyzer:
-    def __init__(self, progress_callback: Optional[Callable[[int, str], None]] = None):
-        """
-        Args:
-            progress_callback: A function that takes (percentage: int, message: str) 
-                               to update the GUI.
-        """
+    """
+    Orchestrates the end-to-end analysis pipeline.
+    """
+
+    def __init__(
+        self,
+        progress_callback: Optional[ProgressCallback] = None,
+        engine_id: str = "embedding_v1",
+        config: Optional[EngineConfig] = None,
+    ):
         self.progress_callback = progress_callback
-        self.engine = None  # Lazy load to save memory if not needed
+        self.engine_id = engine_id
+        self.config = config or EngineConfig()
+        self._loader = DocumentLoader()
+        self.last_result: Optional[ComparisonResult] = None
 
-    def _update_progress(self, percent: int, message: str):
-        if self.progress_callback:
-            self.progress_callback(percent, message)
-
-    def analyze_one_to_one(self, file_path_1: str, file_path_2: str) -> dict:
-        """
-        Full pipeline for One-to-One comparison.
-        """
+    def analyze_one_to_one(
+        self,
+        file_path_1: str,
+        file_path_2: str,
+    ) -> dict:
         start_time = time.time()
-
-        # 1. Preparing & Validating
-        self._update_progress(10, "Preparing assignments")
         
-        # 2. Reading Documents
-        self._update_progress(20, "Reading documents")
         try:
-            raw_text_1 = extract_text_from_file(file_path_1)
-            raw_text_2 = extract_text_from_file(file_path_2)
-        except AssignmentAnalyzerError as e:
-            return self._error_result(str(e))
+            engine = EngineRegistry.get(self.engine_id)
+        except Exception as e:
+            return self._create_error_dict(file_path_1, file_path_2, str(e), start_time)
 
-        # 3. Extracting and Cleaning Text
-        self._update_progress(40, "Extracting and cleaning text")
-        clean_text_1 = clean_text(raw_text_1)
-        clean_text_2 = clean_text(raw_text_2)
-
-        paras_1 = extract_paragraphs(clean_text_1)
-        paras_2 = extract_paragraphs(clean_text_2)
-
-        # Basic Metadata Checks (Bonus Feature)
-        metadata_warnings = self._check_metadata(clean_text_1, clean_text_2)
-
-        # 4. Analyzing Content
-        self._update_progress(60, "Loading AI model and analyzing content")
-        if self.engine is None:
-            self.engine = SimilarityEngine()
-
-        # 5. Comparing Similarities
-        self._update_progress(80, "Comparing semantic similarities")
+        self._progress(10, "Preparing assignments")
         
-        # If documents are huge, we might want to chunk them, but for now paragraphs are fine
-        matches, overall_similarity_score = self.engine.find_similar_paragraphs(paras_1, paras_2, threshold=0.75)
-        
-        # Convert to percentage
-        sim_percentage = min(100, int(overall_similarity_score * 100))
-        
-        # 6. Generating Results
-        self._update_progress(95, "Generating summary")
-        
-        end_time = time.time()
-        processing_time = round(end_time - start_time, 1)
+        try:
+            doc_a = self._loader.load(
+                file_path_1,
+                self._sub_progress(10, 25, "Reading document 1")
+            )
+        except Exception as e:
+            return self._create_error_dict(file_path_1, file_path_2, str(e), start_time)
 
-        result = self._format_results(sim_percentage, matches, processing_time, metadata_warnings)
-        
-        self._update_progress(100, "Finished")
-        return result
+        try:
+            doc_b = self._loader.load(
+                file_path_2,
+                self._sub_progress(25, 40, "Reading document 2")
+            )
+        except Exception as e:
+            return self._create_error_dict(file_path_1, file_path_2, str(e), start_time, doc_a)
 
-    def _check_metadata(self, text1: str, text2: str) -> list[str]:
-        """
-        Simple heuristic checks for identical Student IDs or Names in the first few characters.
-        """
+        self._progress(40, "Validating documents")
+        if doc_a.is_empty or doc_b.is_empty:
+            elapsed = time.time() - start_time
+            which = doc_a.file_name if doc_a.is_empty else doc_b.file_name
+            res = ComparisonResult.error_result(
+                doc_a, doc_b,
+                f"Document '{which}' appears empty or contains no readable text.",
+                self.engine_id, elapsed
+            )
+            self.last_result = res
+            return res.to_legacy_dict()
+
+        self._progress(45, "Checking metadata")
+        metadata_warnings = self._check_metadata(doc_a, doc_b)
+
+        self._progress(50, "Loading AI model and analyzing content")
+        result = engine.compare(
+            doc_a, doc_b, self.config,
+            progress_callback=self._sub_progress(50, 90, "Comparing")
+        )
+
+        if result.error:
+            self.last_result = result
+            return result.to_legacy_dict()
+
+        self._progress(90, "Generating summary")
+        enriched = self._enrich(result, metadata_warnings, time.time() - start_time)
+
+        self._progress(100, "Finished")
+        
+        self.last_result = enriched
+        return enriched.to_legacy_dict()
+
+    def _create_error_dict(self, path1: str, path2: str, msg: str, start_time: float, doc_a: Optional[Document] = None) -> dict:
+        elapsed = time.time() - start_time
+        if doc_a is None:
+            doc_a = Document(
+                source=DocumentSource(path1, os.path.basename(path1), "", 0, 0.0),
+                content=DocumentContent("", (), 0, 0, 0),
+                extraction_info=ExtractionInfo(ExtractionMethod.DIGITAL_TEXT, 0, 0, 0.0, ())
+            )
+        res = ComparisonResult.error_result(doc_a, None, msg, self.engine_id, elapsed)
+        self.last_result = res
+        return res.to_legacy_dict()
+
+    def _enrich(
+        self,
+        result: ComparisonResult,
+        warnings: tuple[MetadataWarning, ...],
+        total_time: float,
+    ) -> ComparisonResult:
+        summary = self._generate_summary(result.statistics, len(result.matched_paragraphs), warnings)
+        return dataclasses.replace(
+            result,
+            metadata_warnings=warnings,
+            summary=summary,
+            processing_time_s=total_time,
+        )
+
+    def _check_metadata(self, doc_a: Document, doc_b: Document) -> tuple[MetadataWarning, ...]:
         warnings = []
-        
-        # Look at the first 500 characters for title page stuff
-        t1_head = text1[:500].lower()
-        t2_head = text2[:500].lower()
-        
-        # Regex to find potential student IDs (e.g., 7-9 digits)
-        id_pattern = r'\b\d{7,9}\b'
-        ids1 = set(re.findall(id_pattern, t1_head))
-        ids2 = set(re.findall(id_pattern, t2_head))
-        
-        common_ids = ids1.intersection(ids2)
-        if common_ids:
-            warnings.append(f"Identical Student ID detected: {', '.join(common_ids)}")
-            
-        return warnings
+        head_a = doc_a.content.raw_text[:500].lower()
+        head_b = doc_b.content.raw_text[:500].lower()
 
-    def _format_results(self, score: int, matches: list, processing_time: float, warnings: list) -> dict:
-        """
-        Formats the output dictionary for the GUI.
-        """
-        # Determine Risk Level
-        if score >= 70:
-            risk_level, risk_color = "High Similarity", "#E63946" # Colors.HIGH_RISK equivalent
-        elif score >= 40:
-            risk_level, risk_color = "Moderate Similarity", "#F4A261" # Colors.MEDIUM_RISK
-        else:
-            risk_level, risk_color = "Low Similarity", "#2A9D8F" # Colors.LOW_RISK
+        ids_a = set(re.findall(r'\b\d{7,9}\b', head_a))
+        ids_b = set(re.findall(r'\b\d{7,9}\b', head_b))
+        for common_id in ids_a & ids_b:
+            warnings.append(MetadataWarning(
+                code="IDENTICAL_STUDENT_ID",
+                severity="high",
+                message=f"Identical Student ID detected: {common_id}",
+            ))
 
-        num_matches = len(matches)
-        
-        # Generate dynamic summary
+        if doc_a.source.file_name.lower() == doc_b.source.file_name.lower():
+            warnings.append(MetadataWarning(
+                code="IDENTICAL_FILENAME",
+                severity="medium",
+                message=f"Both documents have the same filename: {doc_a.source.file_name}",
+            ))
+
+        return tuple(warnings)
+
+    def _generate_summary(self, stats, num_matches, warnings) -> str:
+        score = stats.score_percent
         summary_parts = []
+        
         if score >= 70:
             summary_parts.append("The assignments share a highly significant amount of semantic meaning.")
             summary_parts.append(f"We found {num_matches} highly similar paragraphs indicating potential copying or heavy collaboration.")
@@ -132,30 +159,17 @@ class AssignmentAnalyzer:
                 summary_parts.append("No significant semantic overlap was detected.")
 
         if warnings:
-            summary_parts.append("\nWarnings: " + " | ".join(warnings))
+            warn_msgs = [w.message for w in warnings]
+            summary_parts.append("\nWarnings: " + " | ".join(warn_msgs))
 
-        return {
-            "score": score,
-            "risk_level": risk_level,
-            "risk_color": risk_color,
-            "matching_sections": num_matches, # In one-to-one, matches = sections roughly
-            "similar_paragraphs": num_matches,
-            "processing_time": f"{processing_time}s",
-            "confidence_score": "95%", # Hardcoded for now based on embedding robustness
-            "summary": " ".join(summary_parts),
-            "error": False
-        }
+        return " ".join(summary_parts)
 
-    def _error_result(self, message: str) -> dict:
-        return {
-            "score": 0,
-            "risk_level": "Error",
-            "risk_color": "#E63946",
-            "matching_sections": 0,
-            "similar_paragraphs": 0,
-            "processing_time": "0.0s",
-            "confidence_score": "0%",
-            "summary": f"Processing failed: {message}",
-            "error": True
-        }
+    def _progress(self, percent: int, message: str) -> None:
+        if self.progress_callback:
+            self.progress_callback(percent, message)
 
+    def _sub_progress(self, start: int, end: int, prefix: str) -> ProgressCallback:
+        def cb(pct: int, msg: str) -> None:
+            mapped = start + int((pct / 100) * (end - start))
+            self._progress(mapped, f"{prefix}: {msg}")
+        return cb

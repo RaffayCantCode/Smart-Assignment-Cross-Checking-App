@@ -71,3 +71,17 @@ def tokenize_sentences(text: str) -> list[str]:
     sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z]|$)', text)
     return [s.strip() for s in sentences if s.strip()]
 
+
+def fix_ocr_artifacts(text: str) -> str:
+    """
+    Fixes common OCR mistakes.
+    """
+    if not text:
+        return text
+    # Fix hyphenation at line breaks
+    text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+    # Replace 'l' with '1' in digit contexts (e.g., 'l23' -> '123')
+    text = re.sub(r'\bl(?=\d)', '1', text)
+    text = re.sub(r'(?<=\d)l\b', '1', text)
+    return text
+

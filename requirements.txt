@@ -4,3 +4,6 @@ python-docx
 sentence-transformers
 scikit-learn
 nltk
+Pillow
+pytesseract
+easyocr
