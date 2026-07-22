@@ -4,7 +4,7 @@ from typing import Optional
 import concurrent.futures
 
 from .base import TextExtractor, ProgressCallback
-from .ocr import TesseractProvider, EasyOCRProvider, OCRProvider
+from .ocr import TesseractProvider, OCRProvider
 from ..domain.document import (
     Document, DocumentSource, DocumentContent, ExtractionInfo,
     ExtractionMethod, Paragraph, Sentence, ExtractionWarning
@@ -17,9 +17,14 @@ try:
 except ImportError:
     fitz = None
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 class PDFExtractor(TextExtractor):
     def __init__(self):
-        self._ocr_providers: list[OCRProvider] = [TesseractProvider(), EasyOCRProvider()]
+        self._ocr_providers: list[OCRProvider] = [TesseractProvider()]
 
     @property
     def supported_extensions(self) -> tuple[str, ...]:
@@ -34,40 +39,45 @@ class PDFExtractor(TextExtractor):
                 return provider
         return None
 
-    def _perform_ocr_on_pages(self, doc, pages_need_ocr: list[int], provider: OCRProvider, progress_callback: Optional[ProgressCallback] = None) -> tuple[list[tuple[int, str]], list[ExtractionWarning]]:
+    def _perform_ocr_on_pages(self, doc, pages_need_ocr: list[int], provider: OCRProvider, progress_callback: Optional[ProgressCallback] = None) -> tuple[list[tuple[int, str]], list[ExtractionWarning], list[float]]:
         results = []
         warnings = []
+        confidences = []
         total = len(pages_need_ocr)
         
         def process_page(page_num):
             try:
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                img_bytes = pix.tobytes("png")
-                text = provider.extract_text_from_image_bytes(img_bytes, dpi=144)
-                if not text.strip():
-                    return page_num, "", ExtractionWarning("OCR_PAGE_FAILED", f"OCR failed or returned empty text on page {page_num + 1}", page_num + 1)
-                return page_num, text, None
-            except Exception as e:
-                return page_num, "", ExtractionWarning("OCR_PAGE_FAILED", f"OCR error on page {page_num + 1}: {e}", page_num + 1)
-
-        if total <= 5:
-            for i, p in enumerate(pages_need_ocr):
-                if progress_callback: progress_callback(20 + int(15 * i / total), f"Reading documents (OCR: page {i+1} of {total})")
-                num, txt, warn = process_page(p)
-                results.append((num, txt))
-                if warn: warnings.append(warn)
-        else:
-            max_workers = min(os.cpu_count() or 4, total, 4)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(process_page, p): p for p in pages_need_ocr}
-                for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    if progress_callback: progress_callback(20 + int(15 * i / total), f"Reading documents (OCR: page {i+1} of {total})")
-                    num, txt, warn = future.result()
-                    results.append((num, txt))
-                    if warn: warnings.append(warn)
+                
+                if Image is None:
+                    return page_num, "", 0.0, ExtractionWarning("OCR_FAILED", "Pillow not installed", page_num + 1)
                     
-        return results, warnings
+                mode = "RGBA" if pix.alpha else "RGB"
+                img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                
+                result = provider.extract_text_from_image(img)
+                if not result.text.strip():
+                    return page_num, "", result.confidence, ExtractionWarning("OCR_PAGE_FAILED", f"OCR failed or returned empty text on page {page_num + 1}", page_num + 1)
+                return page_num, result.text, result.confidence, None
+            except Exception as e:
+                return page_num, "", 0.0, ExtractionWarning("OCR_PAGE_FAILED", f"OCR error on page {page_num + 1}: {e}", page_num + 1)
+
+        # Signal GUI we are doing OCR
+        if progress_callback:
+            progress_callback(30, "Converting Pages")
+
+        max_workers = min(os.cpu_count() or 2, total, 2)  # Limited to 2 to prevent UI freezing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_page, p): p for p in pages_need_ocr}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                if progress_callback: progress_callback(30 + int(15 * i / total), f"Running OCR ({i+1} of {total})")
+                num, txt, conf, warn = future.result()
+                results.append((num, txt))
+                if conf > 0: confidences.append(conf)
+                if warn: warnings.append(warn)
+                    
+        return results, warnings, confidences
 
     def extract(
         self,
@@ -79,10 +89,16 @@ class PDFExtractor(TextExtractor):
 
         start_time = time.time()
         
+        if progress_callback:
+            progress_callback(10, "Opening PDF")
+
         try:
             doc = fitz.open(file_path)
         except Exception as e:
             raise FileProcessingError(f"Error opening PDF {file_path}: {e}")
+
+        if progress_callback:
+            progress_callback(15, "Detecting Text Layer")
 
         pages_text = []
         pages_need_ocr = []
@@ -99,15 +115,20 @@ class PDFExtractor(TextExtractor):
                 pages_need_ocr.append(page_num)
 
         warnings = []
+        confidences = []
         if pages_need_ocr:
+            if progress_callback:
+                progress_callback(-1, "OCR_ACTIVE")
+                
             ocr_provider = self._get_ocr_provider()
             if not ocr_provider:
-                warnings.append(ExtractionWarning("OCR_UNAVAILABLE", "OCR is needed for some pages but no OCR engine is available.", 0))
+                warnings.append(ExtractionWarning("OCR_UNAVAILABLE", "OCR is needed for some pages but no OCR engine is available (Tesseract not found).", 0))
                 for p in pages_need_ocr:
                     pages_text.append((p, "", False))
             else:
-                ocr_results, ocr_warnings = self._perform_ocr_on_pages(doc, pages_need_ocr, ocr_provider, progress_callback)
+                ocr_results, ocr_warnings, ocr_confs = self._perform_ocr_on_pages(doc, pages_need_ocr, ocr_provider, progress_callback)
                 warnings.extend(ocr_warnings)
+                confidences.extend(ocr_confs)
                 for page_num, text in ocr_results:
                     pages_text.append((page_num, text, True))
 
@@ -115,6 +136,9 @@ class PDFExtractor(TextExtractor):
         
         pages_text.sort(key=lambda x: x[0])
         
+        if progress_callback and pages_need_ocr:
+            progress_callback(45, "Cleaning OCR Output")
+
         paragraphs = []
         total_words = 0
         raw_text_parts = []
@@ -176,12 +200,15 @@ class PDFExtractor(TextExtractor):
         else:
             method = ExtractionMethod.OCR_HYBRID
 
+        mean_ocr_conf = sum(confidences) / len(confidences) if confidences else 0.0
+
         extraction_info = ExtractionInfo(
             method=method,
             page_count=total_pages,
             ocr_page_count=ocr_page_count,
             extraction_time_s=time.time() - start_time,
-            warnings=tuple(warnings)
+            warnings=tuple(warnings),
+            mean_ocr_confidence=mean_ocr_conf
         )
 
         return Document(source=source, content=content, extraction_info=extraction_info)

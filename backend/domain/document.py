@@ -41,6 +41,8 @@ class ExtractionInfo:
     ocr_page_count: int
     extraction_time_s: float
     warnings: tuple[ExtractionWarning, ...]
+    mean_ocr_confidence: float = 0.0
+
 
 @dataclass(frozen=True)
 class DocumentSource:

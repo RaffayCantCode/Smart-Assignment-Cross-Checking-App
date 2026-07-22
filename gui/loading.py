@@ -28,6 +28,7 @@ STATUS_STEPS = [
 
 class AnalysisWorker(QThread):
     progress_updated = Signal(int, str)
+    stages_updated = Signal(list)
     analysis_finished = Signal(dict)
 
     def __init__(self, payload: dict, parent=None):
@@ -36,7 +37,10 @@ class AnalysisWorker(QThread):
 
     def run(self):
         try:
-            analyzer = AssignmentAnalyzer(progress_callback=self.progress_updated.emit)
+            analyzer = AssignmentAnalyzer(
+                progress_callback=self.progress_updated.emit,
+                stages_callback=self.stages_updated.emit
+            )
             
             mode = self.payload.get("mode", "one_to_one")
             files = self.payload.get("files", {})
@@ -148,7 +152,18 @@ class StageChecklist(QWidget):
         self.layout.setAlignment(Qt.AlignCenter)
         
         self.rows = []
-        for _, text in STATUS_STEPS:
+        self.set_stages([text for _, text in STATUS_STEPS])
+            
+    def set_stages(self, stages: list[str]):
+        for row in self.rows:
+            for i in reversed(range(row["layout"].count())): 
+                item = row["layout"].itemAt(i)
+                if item.widget():
+                    item.widget().deleteLater()
+            self.layout.removeItem(row["layout"])
+        self.rows.clear()
+
+        for text in stages:
             row = self._create_row(text)
             self.rows.append(row)
             self.layout.addLayout(row["layout"])
@@ -229,8 +244,10 @@ class LoadingScreen(QWidget):
     def start(self, payload: dict):
         self._payload = payload
         self._progress = 0
+        self.current_stages = [text for _, text in STATUS_STEPS]
         self.percent_label.setText("0%")
         self.progress_bar.setValue(0)
+        self.checklist.set_stages(self.current_stages)
         self.checklist.update_progress(0)
         
         self.ring.start()
@@ -238,19 +255,48 @@ class LoadingScreen(QWidget):
         # Start real background worker
         self._worker = AnalysisWorker(payload)
         self._worker.progress_updated.connect(self._on_progress_update)
+        self._worker.stages_updated.connect(self._on_stages_updated)
         self._worker.analysis_finished.connect(self._on_analysis_finished)
         self._worker.start()
 
+    def _on_stages_updated(self, stages: list[str]):
+        self.current_stages = stages
+        self.checklist.set_stages(stages)
+        self.checklist.update_progress(0)
+
     def _on_progress_update(self, percent: int, message: str):
+        if percent == -1 and message == "OCR_ACTIVE":
+            ocr_stages = [
+                "Preparing assignments",
+                "Opening PDF",
+                "Detecting Text Layer",
+                "Converting Pages",
+                "Running OCR",
+                "Cleaning OCR Output",
+                "Comparing similarities",
+                "Generating results"
+            ]
+            self._on_stages_updated(ocr_stages)
+            return
+            
         self._progress = percent
         self.progress_bar.setValue(self._progress)
         self.percent_label.setText(f"{self._progress}%")
 
-        # Find current stage index based on threshold
         current_idx = 0
-        for i, (threshold, text) in enumerate(STATUS_STEPS):
-            if self._progress >= threshold:
+        # Determine index by looking for the stage name in the message
+        found = False
+        for i, stage_text in enumerate(self.current_stages):
+            if stage_text.lower() in message.lower():
                 current_idx = i
+                found = True
+                break
+                
+        # Fallback to threshold if not found and using default STATUS_STEPS
+        if not found and self.current_stages == [text for _, text in STATUS_STEPS]:
+            for i, (threshold, text) in enumerate(STATUS_STEPS):
+                if self._progress >= threshold:
+                    current_idx = i
 
         self.checklist.update_progress(current_idx)
 
@@ -258,6 +304,6 @@ class LoadingScreen(QWidget):
         self.ring.stop()
         self.progress_bar.setValue(100)
         self.percent_label.setText("100%")
-        self.checklist.update_progress(len(STATUS_STEPS))
+        self.checklist.update_progress(len(self.current_stages))
         self.finished.emit(result)
 

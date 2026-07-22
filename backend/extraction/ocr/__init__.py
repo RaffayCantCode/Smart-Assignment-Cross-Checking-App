@@ -1,5 +1,4 @@
-from .base import OCRProvider
+from .base import OCRProvider, OCRResult
 from .tesseract_provider import TesseractProvider
-from .easyocr_provider import EasyOCRProvider
 
-__all__ = ["OCRProvider", "TesseractProvider", "EasyOCRProvider"]
+__all__ = ["OCRProvider", "OCRResult", "TesseractProvider"]

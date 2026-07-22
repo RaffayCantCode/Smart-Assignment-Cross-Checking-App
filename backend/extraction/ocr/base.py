@@ -1,4 +1,13 @@
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, TYPE_CHECKING
+from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from PIL import Image
+
+@dataclass(frozen=True)
+class OCRResult:
+    text: str
+    confidence: float
 
 @runtime_checkable
 class OCRProvider(Protocol):
@@ -8,21 +17,20 @@ class OCRProvider(Protocol):
 
     @property
     def provider_id(self) -> str:
-        """e.g. 'tesseract', 'easyocr'"""
+        """e.g. 'tesseract'"""
         ...
 
     def is_available(self) -> bool:
         """Returns True if this provider's runtime dependencies are present."""
         ...
 
-    def extract_text_from_image_bytes(
+    def extract_text_from_image(
         self,
-        image_bytes: bytes,     # PNG bytes from fitz.Pixmap.tobytes("png")
-        dpi: int = 144,
-    ) -> str:
+        image: 'Image.Image',
+    ) -> OCRResult:
         """
-        Performs OCR on an in-memory image.
-        Returns extracted text, or empty string on failure (never raises).
+        Performs OCR on an in-memory PIL Image.
+        Returns OCRResult(text, confidence), or empty on failure (never raises).
         Errors are captured as ExtractionWarnings at the caller level.
         """
         ...

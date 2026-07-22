@@ -20,10 +20,12 @@ class AssignmentAnalyzer:
     def __init__(
         self,
         progress_callback: Optional[ProgressCallback] = None,
+        stages_callback: Optional[Callable[[list[str]], None]] = None,
         engine_id: str = "embedding_v1",
         config: Optional[EngineConfig] = None,
     ):
         self.progress_callback = progress_callback
+        self.stages_callback = stages_callback
         self.engine_id = engine_id
         self.config = config or EngineConfig()
         self._loader = DocumentLoader()
@@ -170,6 +172,9 @@ class AssignmentAnalyzer:
 
     def _sub_progress(self, start: int, end: int, prefix: str) -> ProgressCallback:
         def cb(pct: int, msg: str) -> None:
+            if pct == -1:
+                self._progress(-1, msg)
+                return
             mapped = start + int((pct / 100) * (end - start))
             self._progress(mapped, f"{prefix}: {msg}")
         return cb
