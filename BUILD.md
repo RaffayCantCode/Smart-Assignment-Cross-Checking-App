@@ -7,25 +7,20 @@ demo from).
 
 ## Quick way
 
-1. Copy the whole `SmartAssignmentChecker` folder onto Windows.
-2. Double-click `build_exe.bat` (or run it from Command Prompt).
-   - If Python isn't installed, the script installs it for you
-     automatically (via `winget`, or by downloading the official
-     installer if `winget` isn't available) — you don't need to do
-     anything by hand.
-   - If it installs Python fresh, it may ask you to close the window
-     and run the script a second time (Windows needs a new session to
-     recognize the newly installed program).
-3. Wait for it to finish — first build takes a few minutes.
-4. Your exe is at `dist\SmartAssignmentChecker.exe`. That single file is
-   what you hand to your teacher — no Python install needed on their end.
+1. Double-click `build_exe.bat` (or run it from Command Prompt).
+   - If Python or dependencies aren't installed, the script handles setup.
+2. Wait for it to finish (~1 minute).
+3. Your application folder is produced at `dist\SmartAssignmentChecker\`.
+   - Main binary: `dist\SmartAssignmentChecker\SmartAssignmentChecker.exe`
+   - All required `.dll` files, Python runtime, and libraries are included inside this folder.
+   - Distribution archive: `dist\SmartAssignmentChecker-App.zip` (ready to copy/share for presentations).
 
-## Manual way (same thing, spelled out)
+## Manual way
 
 ```bat
 pip install -r requirements.txt
 pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name "SmartAssignmentChecker" --add-data "assets;assets" main.py
+pyinstaller SmartAssignmentChecker.spec --noconfirm
 ```
 
 - `--onefile` → bundles everything into a single .exe (bigger, slightly

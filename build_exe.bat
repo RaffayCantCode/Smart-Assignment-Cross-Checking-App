@@ -56,9 +56,14 @@ echo Using Python: %PYEXE%
 "%PYEXE%" --version
 
 echo.
-echo Building executable using spec file...
-"%PYEXE%" -m PyInstaller SmartAssignmentChecker.spec --noconfirm
+echo Cleaning previous build artifacts...
+if exist build rd /s /q build
+if exist dist\SmartAssignmentChecker rd /s /q dist\SmartAssignmentChecker
+if exist dist\SmartAssignmentChecker-App.zip del /q dist\SmartAssignmentChecker-App.zip
 
+echo.
+echo Building standalone executable folder using PyInstaller spec...
+"%PYEXE%" -m PyInstaller SmartAssignmentChecker.spec --noconfirm
 
 if not exist "dist\SmartAssignmentChecker\SmartAssignmentChecker.exe" (
     echo.
@@ -71,9 +76,16 @@ if not exist "dist\SmartAssignmentChecker\SmartAssignmentChecker.exe" (
 )
 
 echo.
+echo Creating ZIP package for distribution...
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\SmartAssignmentChecker\*' -DestinationPath 'dist\SmartAssignmentChecker-App.zip' -Force"
+
+echo.
 echo ============================================================
-echo  SUCCESS! Your .exe is here:
-echo     dist\SmartAssignmentChecker\SmartAssignmentChecker.exe
+echo  SUCCESS! Your app folder and executable are ready:
+echo     Folder: dist\SmartAssignmentChecker\
+echo     Exe:    dist\SmartAssignmentChecker\SmartAssignmentChecker.exe
+echo     Zip:    dist\SmartAssignmentChecker-App.zip
 echo ============================================================
 echo.
 pause
+

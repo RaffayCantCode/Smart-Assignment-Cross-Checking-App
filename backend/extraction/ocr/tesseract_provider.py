@@ -13,12 +13,16 @@ class TesseractProvider(OCRProvider):
 
     def _check_tesseract(self):
         try:
+            import sys
             import pytesseract
             # Try to find Tesseract in PATH or common Windows locations
             if not shutil.which("tesseract"):
                 common_paths = [
                     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                    os.path.join(os.path.expanduser("~"), r"AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+                    os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "Tesseract-OCR", "tesseract.exe"),
+                    os.path.join(os.getcwd(), "Tesseract-OCR", "tesseract.exe"),
                 ]
                 for path in common_paths:
                     if os.path.exists(path):
