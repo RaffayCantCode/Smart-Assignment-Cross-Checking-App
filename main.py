@@ -6,6 +6,7 @@ together via a QStackedWidget. Implements a smooth page transition inline.
 """
 
 import sys
+import pydoc
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QGraphicsOpacityEffect

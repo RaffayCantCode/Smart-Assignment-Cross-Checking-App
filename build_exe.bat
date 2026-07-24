@@ -6,9 +6,20 @@ REM  build_exe.bat
 REM
 REM  Builds a standalone Windows .exe for the Smart Assignment
 REM  Cross-Checking App using PyInstaller.
-REM  
-REM  Make sure to run install_dependencies.bat first!
 REM ============================================================
+
+echo.
+echo ============================================================
+echo  SMART ASSIGNMENT CROSS-CHECKING APP - BUILD SCRIPT
+echo ============================================================
+echo  [IMPORTANT NOTICE]
+echo  Building the standalone application packages deep AI model 
+echo  weights, PySide6 GUI binaries, and NLP dependency libraries.
+echo.
+echo  This process CAN TAKE 5 TO 10 MINUTES to complete!
+echo  Please be patient and DO NOT close this window.
+echo ============================================================
+echo.
 
 set "PYEXE="
 
@@ -63,6 +74,7 @@ if exist dist\SmartAssignmentChecker-App.zip del /q dist\SmartAssignmentChecker-
 
 echo.
 echo Building standalone executable folder using PyInstaller spec...
+echo (Please wait, this step resolves all AI and GUI dependencies...)
 "%PYEXE%" -m PyInstaller SmartAssignmentChecker.spec --noconfirm
 
 if not exist "dist\SmartAssignmentChecker\SmartAssignmentChecker.exe" (
@@ -88,4 +100,5 @@ echo     Zip:    dist\SmartAssignmentChecker-App.zip
 echo ============================================================
 echo.
 pause
+
 
