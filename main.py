@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         self._slide_in_anim = None
         self._anim_group = None
         self._next_widget = None
+        self._last_payload = None   # stores the last analysis payload for re-runs
 
         self.setup_ui(initial=True)
 
@@ -72,7 +73,7 @@ class MainWindow(QMainWindow):
         
         self.loading_screen.finished.connect(self._go_to_results)
         
-        self.results_screen.restart_requested.connect(self._go_to_home)
+        self.results_screen.restart_requested.connect(self._go_to_recheck)
         self.results_screen.new_check_requested.connect(self._go_to_home)
         
         self.settings_screen.back_requested.connect(self._go_to_home)
@@ -128,6 +129,12 @@ class MainWindow(QMainWindow):
         self.home_screen.reset()
         self._fade_to(self.home_screen)
 
+    def _go_to_recheck(self):
+        """Re-run the exact same analysis from scratch with the same files.
+        This is a full fresh pipeline run — not a cached result."""
+        if self._last_payload:
+            self._go_to_loading(self._last_payload)
+
     def _go_to_settings(self):
         self._fade_to(self.settings_screen)
 
@@ -136,6 +143,7 @@ class MainWindow(QMainWindow):
         self._fade_to(self.upload_screen)
 
     def _go_to_loading(self, payload: dict):
+        self._last_payload = payload   # remember for re-runs
         self._fade_to(self.loading_screen)
         # Start immediately so animation plays during fade-in
         self.loading_screen.start(payload)

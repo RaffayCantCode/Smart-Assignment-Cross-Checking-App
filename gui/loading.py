@@ -6,16 +6,21 @@ A QTimer ticks a progress value up and swaps status states.
 The visual uses a DualRing with a soft glow and a checklist of stages.
 """
 
-from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve, QThread
+from collections import deque
+
+from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve, QThread, QRectF, QByteArray
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, 
-    QSizePolicy, QGraphicsDropShadowEffect, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
+    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QFrame
 )
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush
+from PySide6.QtSvg import QSvgRenderer
 
 from styles.theme import Colors, Fonts, Spacing, Icons, IconSize, render_icon, Anim
 from backend.assignment_analyzer import AssignmentAnalyzer
 
+# Minimum milliseconds to display each stage so the user can read it
+_STEP_DISPLAY_MS = 1200
 
 STATUS_STEPS = [
     (0, "Preparing assignments"),
@@ -88,8 +93,9 @@ class DualRing(QWidget):
         self.anim.setDuration(Anim.RING)
         self.anim.setLoopCount(-1)
 
-        # Center icon
-        self.center_icon = render_icon(Icons.LAYERS, Colors.ACCENT, IconSize.XL)
+        # Pre-parse the SVG once; we'll render it directly in paintEvent
+        svg_src = Icons.LAYERS.replace("{color}", Colors.ACCENT)
+        self._svg_renderer = QSvgRenderer(QByteArray(svg_src.encode('utf-8')))
 
     def getAngle(self):
         return self._angle
@@ -136,66 +142,135 @@ class DualRing(QWidget):
         start_angle_inner = int(self._angle * 16)
         painter.drawArc(rect_inner, start_angle_inner, 90 * 16)
 
-        # Center icon
-        icon_x = (self.width() - self.center_icon.width()) // 2
-        icon_y = (self.height() - self.center_icon.height()) // 2
-        painter.drawPixmap(icon_x, icon_y, self.center_icon)
+        # Center icon – rendered directly from SVG for crisp vector quality
+        icon_size = 36
+        icon_x = (self.width()  - icon_size) / 2
+        icon_y = (self.height() - icon_size) / 2
+        icon_rect = QRectF(icon_x, icon_y, icon_size, icon_size)
+        self._svg_renderer.render(painter, icon_rect)
+
+
+class StageRow(QWidget):
+    """
+    A single step row in the loading checklist.
+    Uses text glyphs for state indicators (dash → dot → tick) so there is
+    zero risk of QSS+QGraphicsEffect conflicts on the row widget itself.
+    The indicator label gets a brief opacity fade when a step activates.
+    """
+
+    _PENDING_GLYPH = "–"      # en-dash
+    _ACTIVE_GLYPH  = "●"      # filled circle
+    _DONE_GLYPH    = "✓"      # check mark
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(300)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(Spacing.LG, Spacing.SM, Spacing.LG, Spacing.SM)
+        lay.setSpacing(Spacing.MD)
+        lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        # Indicator glyph (no QSS background → safe for QGraphicsOpacityEffect)
+        self.indicator = QLabel(self._PENDING_GLYPH)
+        self.indicator.setFixedWidth(20)
+        self.indicator.setAlignment(Qt.AlignCenter)
+        self.indicator.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 700; color: {Colors.TEXT_MUTED};"
+        )
+        lay.addWidget(self.indicator)
+
+        self.text_lbl = QLabel(text)
+        self.text_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};"
+        )
+        lay.addWidget(self.text_lbl)
+
+        # Opacity effect on indicator label only — safe (no QSS bg on QLabel)
+        self._ind_fx = QGraphicsOpacityEffect(self.indicator)
+        self._ind_fx.setOpacity(1.0)
+        self.indicator.setGraphicsEffect(self._ind_fx)
+        self._ind_anim: QPropertyAnimation | None = None
+
+    # ------------------------------------------------------------------
+    def _fade_indicator(self, from_val: float = 0.0):
+        """Fade the indicator glyph from `from_val` to 1.0."""
+        if self._ind_anim:
+            self._ind_anim.stop()
+        self._ind_fx.setOpacity(from_val)
+        self._ind_anim = QPropertyAnimation(self._ind_fx, b"opacity")
+        self._ind_anim.setDuration(350)
+        self._ind_anim.setStartValue(from_val)
+        self._ind_anim.setEndValue(1.0)
+        self._ind_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._ind_anim.start()
+
+    def set_done(self):
+        if self._ind_anim:
+            self._ind_anim.stop()
+        self._ind_fx.setOpacity(1.0)
+        self.indicator.setText(self._DONE_GLYPH)
+        self.indicator.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 700; color: {Colors.SUCCESS};"
+        )
+        self.text_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_SECONDARY};"
+        )
+
+    def set_active(self):
+        self.indicator.setText(self._ACTIVE_GLYPH)
+        self.indicator.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 700; color: {Colors.ACCENT};"
+        )
+        self.text_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 600; color: {Colors.TEXT_PRIMARY};"
+        )
+        self._fade_indicator(0.0)   # indicator pulses in
+
+    def set_pending(self):
+        if self._ind_anim:
+            self._ind_anim.stop()
+        self._ind_fx.setOpacity(1.0)
+        self.indicator.setText(self._PENDING_GLYPH)
+        self.indicator.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 700; color: {Colors.TEXT_MUTED};"
+        )
+        self.text_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};"
+        )
 
 
 class StageChecklist(QWidget):
     """Vertical checklist showing processing stages."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(Spacing.MD)
-        self.layout.setAlignment(Qt.AlignCenter)
-        
-        self.rows = []
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(Spacing.XS)
+        self._lay.setAlignment(Qt.AlignCenter)
+
+        self.rows: list[StageRow] = []
         self.set_stages([text for _, text in STATUS_STEPS])
-            
+
     def set_stages(self, stages: list[str]):
         for row in self.rows:
-            for i in reversed(range(row["layout"].count())): 
-                item = row["layout"].itemAt(i)
-                if item.widget():
-                    item.widget().deleteLater()
-            self.layout.removeItem(row["layout"])
+            row.deleteLater()
         self.rows.clear()
 
         for text in stages:
-            row = self._create_row(text)
+            row = StageRow(text, self)
             self.rows.append(row)
-            self.layout.addLayout(row["layout"])
-            
-    def _create_row(self, text: str):
-        layout = QHBoxLayout()
-        layout.setSpacing(Spacing.MD)
-        
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(render_icon(Icons.CLOCK, Colors.TEXT_MUTED, IconSize.MD))
-        layout.addWidget(icon_lbl)
-        
-        text_lbl = QLabel(text)
-        text_lbl.setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};")
-        layout.addWidget(text_lbl)
-        
-        return {"layout": layout, "icon": icon_lbl, "text": text_lbl}
-        
+            self._lay.addWidget(row)
+
     def update_progress(self, current_stage_idx: int):
         for i, row in enumerate(self.rows):
             if i < current_stage_idx:
-                # Completed
-                row["icon"].setPixmap(render_icon(Icons.CHECK, Colors.SUCCESS, IconSize.MD))
-                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_SECONDARY};")
+                row.set_done()
             elif i == current_stage_idx:
-                # In progress
-                row["icon"].setPixmap(render_icon(Icons.REFRESH, Colors.ACCENT, IconSize.MD))
-                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 500; color: {Colors.TEXT_PRIMARY};")
+                row.set_active()
             else:
-                # Pending
-                row["icon"].setPixmap(render_icon(Icons.CLOCK, Colors.TEXT_MUTED, IconSize.MD))
-                row["text"].setStyleSheet(f"font-size: {Fonts.SIZE_BODY_LG}px; color: {Colors.TEXT_MUTED};")
+                row.set_pending()
 
 
 class LoadingScreen(QWidget):
@@ -207,6 +282,14 @@ class LoadingScreen(QWidget):
         self._payload = {}
         self._progress = 0
         self._worker = None
+
+        # Step sequencer state
+        self._pending_steps: deque = deque()   # queue of (target_idx, target_pct, label)
+        self._current_displayed_idx = 0
+        self._step_timer = QTimer(self)
+        self._step_timer.setSingleShot(True)
+        self._step_timer.timeout.connect(self._advance_step)
+        self._pending_result = None            # hold final result until queue drains
 
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignCenter)
@@ -241,9 +324,18 @@ class LoadingScreen(QWidget):
         self.checklist = StageChecklist()
         root.addWidget(self.checklist, alignment=Qt.AlignCenter)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def start(self, payload: dict):
         self._payload = payload
         self._progress = 0
+        self._current_displayed_idx = 0
+        self._pending_steps.clear()
+        self._pending_result = None
+        self._step_timer.stop()
+
         self.current_stages = [text for _, text in STATUS_STEPS]
         self.percent_label.setText("0%")
         self.progress_bar.setValue(0)
@@ -259,10 +351,52 @@ class LoadingScreen(QWidget):
         self._worker.analysis_finished.connect(self._on_analysis_finished)
         self._worker.start()
 
+    # ------------------------------------------------------------------
+    # Step sequencer helpers
+    # ------------------------------------------------------------------
+
+    def _enqueue_step(self, target_idx: int, target_pct: int, message: str):
+        """Buffer a step change; the timer will display them one at a time."""
+        self._pending_steps.append((target_idx, target_pct, message))
+        # Start the timer only if it's not already running
+        if not self._step_timer.isActive():
+            self._step_timer.start(0)  # fire immediately for the first one
+
+    def _advance_step(self):
+        """Called by _step_timer – display the next pending step."""
+        if not self._pending_steps:
+            # Queue drained – if we were holding a final result, emit it now
+            if self._pending_result is not None:
+                self._emit_finished()
+            return
+
+        target_idx, target_pct, message = self._pending_steps.popleft()
+
+        # Update progress bar and label smoothly
+        self.progress_bar.setValue(target_pct)
+        self.percent_label.setText(f"{target_pct}%")
+
+        # Only advance the checklist when the stage index actually changes
+        if target_idx != self._current_displayed_idx:
+            self._current_displayed_idx = target_idx
+            self.checklist.update_progress(target_idx)
+
+        # Schedule the next step after the display delay
+        if self._pending_steps:
+            self._step_timer.start(_STEP_DISPLAY_MS)
+        else:
+            # No more steps – if we're holding a result, wait one more beat
+            if self._pending_result is not None:
+                self._step_timer.start(_STEP_DISPLAY_MS)
+
+    # ------------------------------------------------------------------
+    # Worker signal handlers
+    # ------------------------------------------------------------------
+
     def _on_stages_updated(self, stages: list[str]):
         self.current_stages = stages
         self.checklist.set_stages(stages)
-        self.checklist.update_progress(0)
+        self._current_displayed_idx = 0
 
     def _on_progress_update(self, percent: int, message: str):
         if percent == -1 and message == "OCR_ACTIVE":
@@ -278,32 +412,39 @@ class LoadingScreen(QWidget):
             ]
             self._on_stages_updated(ocr_stages)
             return
-            
-        self._progress = percent
-        self.progress_bar.setValue(self._progress)
-        self.percent_label.setText(f"{self._progress}%")
 
-        current_idx = 0
-        # Determine index by looking for the stage name in the message
+        # Determine which checklist stage this maps to
+        target_idx = self._current_displayed_idx
         found = False
         for i, stage_text in enumerate(self.current_stages):
             if stage_text.lower() in message.lower():
-                current_idx = i
+                target_idx = i
                 found = True
                 break
-                
-        # Fallback to threshold if not found and using default STATUS_STEPS
-        if not found and self.current_stages == [text for _, text in STATUS_STEPS]:
-            for i, (threshold, text) in enumerate(STATUS_STEPS):
-                if self._progress >= threshold:
-                    current_idx = i
 
-        self.checklist.update_progress(current_idx)
+        if not found and self.current_stages == [text for _, text in STATUS_STEPS]:
+            for i, (threshold, _) in enumerate(STATUS_STEPS):
+                if percent >= threshold:
+                    target_idx = i
+
+        self._enqueue_step(target_idx, percent, message)
 
     def _on_analysis_finished(self, result: dict):
+        # Don't emit finished immediately – let the step queue drain first
+        # so every stage is visible for at least _STEP_DISPLAY_MS
+        self._pending_result = result
+        # Enqueue the "100% / all done" step
+        self._enqueue_step(len(self.current_stages), 100, "Finished")
+        # Make sure the timer is running so it will eventually call _emit_finished
+        if not self._step_timer.isActive():
+            self._step_timer.start(_STEP_DISPLAY_MS)
+
+    def _emit_finished(self):
         self.ring.stop()
         self.progress_bar.setValue(100)
         self.percent_label.setText("100%")
         self.checklist.update_progress(len(self.current_stages))
+        result = self._pending_result
+        self._pending_result = None
         self.finished.emit(result)
 

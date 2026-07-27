@@ -9,7 +9,7 @@ import random
 from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QScrollArea, QGridLayout, QGraphicsOpacityEffect
+    QScrollArea, QGridLayout
 )
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
@@ -114,6 +114,8 @@ class ResultsScreen(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Keep strong refs to all active animations so Qt doesn't GC them
+        self._active_anims: list = []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -163,7 +165,6 @@ class ResultsScreen(QWidget):
         self.info_grid = QGridLayout()
         self.info_grid.setSpacing(Spacing.LG)
         self.root.addLayout(self.info_grid)
-        self._info_cards = []
 
         # -- AI summary card ---------------------------------------------------
         self.summary_card = QFrame()
@@ -247,6 +248,11 @@ class ResultsScreen(QWidget):
 
 
     def display_results(self, result: dict):
+        # Kill any running animations from a previous run
+        for anim in self._active_anims:
+            anim.stop()
+        self._active_anims.clear()
+
         is_error = result.get("error", False)
         
         # Set risk badge
@@ -275,39 +281,41 @@ class ResultsScreen(QWidget):
             self.score_ring.set_score(result.get("score", 0), risk_color)
 
         # clear and rebuild info cards
-        self._info_cards.clear()
         while self.info_grid.count():
             item = self.info_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         if is_error:
-            # Don't show info cards if there's an error
             return
 
         cards_data = [
-            (Icons.FILE, "Matching Sections", str(result.get("matching_sections", 0))),
-            (Icons.LAYERS, "Similar Paragraphs", str(result.get("similar_paragraphs", 0))),
-            (Icons.CLOCK, "Processing Time", result.get("processing_time", "0s")),
-            (Icons.CHECK, "Confidence", result.get("confidence_score", "0%")),
+            (Icons.FILE,        "Matching Sections",  str(result.get("matching_sections", 0))),
+            (Icons.LAYERS,      "Similar Paragraphs", str(result.get("similar_paragraphs", 0))),
+            (Icons.CLOCK,       "Processing Time",    result.get("processing_time", "0s")),
+            (Icons.CHECK,       "Confidence",         result.get("confidence_score", "0%")),
         ]
-        
+
         for i, (icon_svg, title, value) in enumerate(cards_data):
             card = InfoCard(icon_svg, title, value)
-            
-            # Setup fade-in effect
-            effect = QGraphicsOpacityEffect(card)
-            effect.setOpacity(0.0)
-            card.setGraphicsEffect(effect)
-            
-            anim = QPropertyAnimation(effect, b"opacity")
-            anim.setDuration(400)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(QEasingCurve.OutCubic)
-            
-            # Staggered start
-            QTimer.singleShot(i * 100, anim.start)
-            
-            self._info_cards.append((card, anim))
+
+            # Start collapsed – animating maximumHeight avoids any QSS interference.
+            # The card is parented, styled and laid out normally; only its height
+            # is temporarily clamped so it slides in from 0.
+            card.setMaximumHeight(0)
             self.info_grid.addWidget(card, i // 2, i % 2)
+
+            # Slide-reveal: 0 → 90px (cards are naturally ~72-80px tall)
+            reveal = QPropertyAnimation(card, b"maximumHeight")
+            reveal.setDuration(420)
+            reveal.setStartValue(0)
+            reveal.setEndValue(90)
+            reveal.setEasingCurve(QEasingCurve.OutCubic)
+            # After animation ends, free the height constraint
+            reveal.finished.connect(lambda c=card: c.setMaximumHeight(16777215))
+
+            self._active_anims.append(reveal)
+
+            # Staggered start
+            delay = 80 + i * 160
+            QTimer.singleShot(delay, reveal.start)

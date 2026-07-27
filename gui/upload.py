@@ -201,3 +201,11 @@ class UploadScreen(QWidget):
     def _on_start(self):
         files = {slot_id: card.file_path for slot_id, card in self.upload_cards.items() if card.has_file()}
         self.start_requested.emit({"mode": self.mode, "files": files})
+
+    def reset(self):
+        """Clear all uploaded files and reset the start button, keeping the
+        current mode layout intact. Called when 'Run Another Check' is pressed
+        so the teacher can upload fresh documents for a new comparison."""
+        for card in self.upload_cards.values():
+            card.clear()         # uses UploadCard.clear() which resets UI state
+        self._update_start_button()
