@@ -13,13 +13,71 @@ except ImportError:
     nltk = None
 
 
-def clean_text(text: str) -> str:
+def remove_quotations(text: str) -> str:
+    """Removes text inside double and single quotes."""
+    if not text:
+        return text
+    text = re.sub(r'["“«][^"”»]*["”»]', ' ', text)
+    text = re.sub(r"(?<=[\s([(])['‘][^'’]+['’](?=[\s.,!?;:)]|$)", ' ', text)
+    return text
+
+def remove_references(text: str) -> str:
+    """Removes in-text citation markers like [1], [1-5], (Smith et al., 2020)."""
+    if not text:
+        return text
+    text = re.sub(r'\[\s*\d+(?:\s*[\-,;]\s*\d+)*\s*\]', ' ', text)
+    text = re.sub(r'\(\s*[A-Z][a-zA-Z\s.,&]+,?\s*\d{4}\s*(?:,\s*p{1,2}\.?\s*\d+)?\s*\)', ' ', text)
+    return text
+
+def remove_bibliography(text: str) -> str:
+    """Strips trailing Bibliography / References / Works Cited section."""
+    if not text:
+        return text
+    pattern = re.compile(
+        r'\n\s*(?:references|bibliography|works\s+cited|references\s+cited)\s*\n',
+        re.IGNORECASE
+    )
+    match = pattern.search(text)
+    if match:
+        return text[:match.start()].strip()
+    return text
+
+def normalize_formatting(text: str) -> str:
+    """Normalizes formatting by lowercasing and stripping non-essential punctuation."""
+    if not text:
+        return text
+    text = text.lower()
+    text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+    text = text.replace('—', '-').replace('–', '-')
+    text = re.sub(r'[^\w\s.,!?]', ' ', text)
+    return text
+
+def clean_text(
+    text: str,
+    ignore_quotations: bool = False,
+    ignore_references: bool = False,
+    ignore_bibliography: bool = False,
+    ignore_formatting: bool = False,
+) -> str:
     """
-    Removes excessive whitespace, normalizes newlines, and strips padding.
+    Removes excessive whitespace, normalizes newlines, strips padding,
+    and applies optional analysis filter options.
     """
     if not text:
         return ""
-    
+
+    if ignore_bibliography:
+        text = remove_bibliography(text)
+
+    if ignore_quotations:
+        text = remove_quotations(text)
+
+    if ignore_references:
+        text = remove_references(text)
+
+    if ignore_formatting:
+        text = normalize_formatting(text)
+
     # Replace multiple spaces/tabs with a single space
     text = re.sub(r'[ \t]+', ' ', text)
     

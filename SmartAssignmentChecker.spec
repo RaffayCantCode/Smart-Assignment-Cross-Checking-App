@@ -6,7 +6,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    datas=[],
     hiddenimports=[
         'sklearn', 
         'sklearn.metrics', 
@@ -24,7 +24,7 @@ a = Analysis(
         'backend.domain.document',
         'backend.domain.comparison',
         'backend.engines',
-        'backend.engines.embedding_v1',
+        'backend.engines.embedding_engine',
         'backend.extraction',
         'backend.extraction.pdf_extractor',
         'backend.extraction.docx_extractor',
@@ -32,7 +32,14 @@ a = Analysis(
         'backend.extraction.ocr.tesseract_provider',
         'backend.reporting',
         'backend.reporting.builder',
+        'backend.reporting.model',
+        'backend.reporting.exporter',
+        'backend.reporting.pdf_exporter',
+        'backend.text_preprocessing',
         'gui',
+        'gui.report',
+        'gui.settings_manager',
+        'gui.notifications',
         'styles',
         'pydoc'
     ],
@@ -52,10 +59,9 @@ a = Analysis(
         'PySide6.QtScxml', 'PySide6.QtSerialPort', 'PySide6.QtSpatialAudio', 'PySide6.QtTest',
         'PySide6.QtTextToSpeech', 'PySide6.QtVirtualKeyboard', 'PySide6.QtWebChannel', 'PySide6.QtWebSockets',
         # Unused heavy submodules
-        'tensorflow', 'sympy', 'torch.distributed', 'torch.testing', 'torch.cuda', 'torch.utils.benchmark',
+        'tensorflow', 'sympy', 'torch.distributed', 'torch.testing', 'torch.utils.benchmark',
         'torch.ao', 'torch.fx', 'torch.export', 'torch.library', 'torch.masked', 'torch.nested',
-        'torch.nn.parallel', 'torch.package', 'torch.profiler', 'torch.sparse', 'torch.special',
-        'scipy.spatial', 'scipy.signal', 'scipy.sparse', 'scipy.optimize', 'scipy.stats', 'scipy.fft'
+        'torch.nn.parallel', 'torch.package', 'torch.profiler', 'torch.sparse', 'torch.special'
     ],
     noarchive=False,
     optimize=1,

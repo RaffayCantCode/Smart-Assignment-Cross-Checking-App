@@ -4,16 +4,22 @@ gui/results.py
 The results dashboard. All values shown here are placeholder/fake data.
 """
 
-import random
-
 from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QScrollArea, QGridLayout
+    QScrollArea, QGridLayout, QFileDialog
 )
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
 from styles.theme import Colors, Fonts, Spacing, Radius, Anim, Icons, IconSize, render_icon
+from backend.reporting import ReportBuilder
+from backend.reporting.exporter import (
+    export_report,
+    build_report_filename,
+    build_save_file_filter,
+    resolve_export_extension,
+)
+from gui.settings_manager import get_export_config
 
 
 
@@ -111,9 +117,11 @@ class ResultsScreen(QWidget):
 
     restart_requested = Signal()
     new_check_requested = Signal()
+    report_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._last_raw_result = None
         # Keep strong refs to all active animations so Qt doesn't GC them
         self._active_anims: list = []
 
@@ -237,17 +245,35 @@ class ResultsScreen(QWidget):
         self.root.addLayout(bottom_row)
 
     def generate_report(self):
-        # Placeholder for report generation
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Generate Report", "Report generation will be implemented in a future update.")
+        if not self._last_raw_result:
+            return
+        model = ReportBuilder.build(self._last_raw_result)
+        export_cfg = get_export_config()
+        default_fmt = export_cfg.get("export_format", "html")
+        assignment_name = model.left_document.title or "Assignment"
+        suggested_name = build_report_filename(assignment_name, default_fmt)
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Generate Report", suggested_name,
+            build_save_file_filter(default_fmt)
+        )
+
+        if not file_path:
+            return  # Exit cleanly if user cancels dialog
+
+        file_path, ext = resolve_export_extension(file_path, selected_filter, default_fmt)
+
+        out_file = export_report(model, file_path, ext, options=export_cfg)
+        from gui.notifications import notify_report_exported
+        notify_report_exported(out_file)
 
     def detailed_report(self):
-        # Placeholder for detailed report
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Detailed Report", "Detailed report view will be available in a future update.")
+        if self._last_raw_result:
+            self.report_requested.emit(self._last_raw_result)
 
 
     def display_results(self, result: dict):
+        self._last_raw_result = result.get("raw_result")
         # Kill any running animations from a previous run
         for anim in self._active_anims:
             anim.stop()
@@ -260,9 +286,9 @@ class ResultsScreen(QWidget):
         risk_color = result.get("risk_color", Colors.BORDER)
         
         self.risk_badge.setStyleSheet(f"""
-            background-color: {risk_color}20; 
+            background-color: #20{risk_color[1:]}; 
             color: {risk_color};
-            border: 1px solid {risk_color}40;
+            border: 1px solid #40{risk_color[1:]};
             border-radius: {Radius.PILL}px;
             font-size: {Fonts.SIZE_BODY}px;
             font-weight: 600;

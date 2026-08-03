@@ -4,6 +4,7 @@ from .base import TextExtractor, ProgressCallback
 from .pdf_extractor import PDFExtractor
 from .docx_extractor import DocxExtractor
 from ..domain.document import Document
+from ..engines.base import EngineConfig
 from ..utils import UnsupportedFileTypeError, FileProcessingError
 
 class DocumentLoader:
@@ -17,13 +18,14 @@ class DocumentLoader:
         self,
         file_path: str,
         progress_callback: Optional[ProgressCallback] = None,
+        config: Optional[EngineConfig] = None,
     ) -> Document:
         if not os.path.exists(file_path):
             raise FileProcessingError(f"File not found: {file_path}")
 
         for extractor in self._extractors:
             if extractor.can_handle(file_path):
-                return extractor.extract(file_path, progress_callback)
+                return extractor.extract(file_path, progress_callback, config)
 
         ext = os.path.splitext(file_path)[1].lower()
         raise UnsupportedFileTypeError(

@@ -9,6 +9,7 @@ from ..domain.document import (
     Document, DocumentSource, DocumentContent, ExtractionInfo,
     ExtractionMethod, Paragraph, Sentence, ExtractionWarning
 )
+from ..engines.base import EngineConfig
 from ..text_preprocessing import clean_text, extract_paragraphs, tokenize_sentences, fix_ocr_artifacts
 from ..utils import FileProcessingError
 
@@ -39,7 +40,7 @@ class PDFExtractor(TextExtractor):
                 return provider
         return None
 
-    def _perform_ocr_on_pages(self, doc, pages_need_ocr: list[int], provider: OCRProvider, progress_callback: Optional[ProgressCallback] = None) -> tuple[list[tuple[int, str]], list[ExtractionWarning], list[float]]:
+    def _perform_ocr_on_pages(self, doc, pages_need_ocr: list[int], provider: OCRProvider, progress_callback: Optional[ProgressCallback] = None, config: Optional[EngineConfig] = None) -> tuple[list[tuple[int, str]], list[ExtractionWarning], list[float]]:
         results = []
         warnings = []
         confidences = []
@@ -67,7 +68,18 @@ class PDFExtractor(TextExtractor):
         if progress_callback:
             progress_callback(30, "Converting Pages")
 
-        max_workers = min(os.cpu_count() or 2, total, 2)  # Limited to 2 to prevent UI freezing
+        if config and config.max_threads != "Auto":
+            try:
+                cpu_workers = int(config.max_threads)
+            except ValueError:
+                cpu_workers = os.cpu_count() or 4
+        else:
+            cpu_workers = os.cpu_count() or 4
+
+        max_workers = min(cpu_workers, total)
+        if max_workers < 1:
+            max_workers = 1
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_page, p): p for p in pages_need_ocr}
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -83,6 +95,7 @@ class PDFExtractor(TextExtractor):
         self,
         file_path: str,
         progress_callback: Optional[ProgressCallback] = None,
+        config: Optional[EngineConfig] = None,
     ) -> Document:
         if fitz is None:
             raise FileProcessingError("PyMuPDF (fitz) is not installed. Cannot read PDF.")
@@ -126,7 +139,7 @@ class PDFExtractor(TextExtractor):
                 for p in pages_need_ocr:
                     pages_text.append((p, "", False))
             else:
-                ocr_results, ocr_warnings, ocr_confs = self._perform_ocr_on_pages(doc, pages_need_ocr, ocr_provider, progress_callback)
+                ocr_results, ocr_warnings, ocr_confs = self._perform_ocr_on_pages(doc, pages_need_ocr, ocr_provider, progress_callback, config)
                 warnings.extend(ocr_warnings)
                 confidences.extend(ocr_confs)
                 for page_num, text in ocr_results:
@@ -146,7 +159,13 @@ class PDFExtractor(TextExtractor):
         para_index = 0
         for page_num, text, is_ocr in pages_text:
             raw_text_parts.append(text)
-            clean_txt = clean_text(text)
+            clean_txt = clean_text(
+                text,
+                ignore_quotations=config.ignore_quotations if config else False,
+                ignore_references=config.ignore_references if config else False,
+                ignore_bibliography=config.ignore_bibliography if config else False,
+                ignore_formatting=config.ignore_formatting if config else False,
+            )
             if is_ocr:
                 clean_txt = fix_ocr_artifacts(clean_txt)
                 

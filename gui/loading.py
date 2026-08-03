@@ -6,8 +6,6 @@ A QTimer ticks a progress value up and swaps status states.
 The visual uses a DualRing with a soft glow and a checklist of stages.
 """
 
-from collections import deque
-
 from PySide6.QtCore import Qt, QTimer, Property, QPropertyAnimation, Signal, QEasingCurve, QThread, QRectF, QByteArray
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
@@ -18,6 +16,8 @@ from PySide6.QtSvg import QSvgRenderer
 
 from styles.theme import Colors, Fonts, Spacing, Icons, IconSize, render_icon, Anim
 from backend.assignment_analyzer import AssignmentAnalyzer
+from backend.engines.base import EngineConfig
+from gui.settings_manager import get_analysis_config
 
 # Minimum milliseconds to display each stage so the user can read it
 _STEP_DISPLAY_MS = 1200
@@ -42,9 +42,27 @@ class AnalysisWorker(QThread):
 
     def run(self):
         try:
+            # Emit immediately so the UI never sits silent before first progress
+            self.progress_updated.emit(2, "Preparing assignments...")
+            cfg = get_analysis_config()
+            engine_config = EngineConfig(
+                similarity_threshold=cfg["similarity_threshold"],
+                sentence_threshold=cfg["sentence_threshold"],
+                enable_sentence_matching=cfg["enable_sentence_matching"],
+                max_paragraphs=cfg["max_paragraphs"],
+                batch_size=cfg["batch_size"],
+                ignore_quotations=cfg["ignore_quotations"],
+                ignore_references=cfg["ignore_references"],
+                ignore_bibliography=cfg["ignore_bibliography"],
+                ignore_formatting=cfg["ignore_formatting"],
+                max_threads=cfg["max_threads"],
+                enable_cache=cfg["enable_cache"],
+            )
+            self.progress_updated.emit(4, "Initializing analysis engine...")
             analyzer = AssignmentAnalyzer(
                 progress_callback=self.progress_updated.emit,
-                stages_callback=self.stages_updated.emit
+                stages_callback=self.stages_updated.emit,
+                config=engine_config,
             )
             
             mode = self.payload.get("mode", "one_to_one")
@@ -284,7 +302,7 @@ class LoadingScreen(QWidget):
         self._worker = None
 
         # Step sequencer state
-        self._pending_steps: deque = deque()   # queue of (target_idx, target_pct, label)
+        self._next_step: tuple | None = None   # single armed step (coalesced - never backlogged)
         self._current_displayed_idx = 0
         self._step_timer = QTimer(self)
         self._step_timer.setSingleShot(True)
@@ -324,6 +342,31 @@ class LoadingScreen(QWidget):
         self.checklist = StageChecklist()
         root.addWidget(self.checklist, alignment=Qt.AlignCenter)
 
+        # -- Live status message ----------------------------------------------
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.status_label.setMaximumWidth(500)
+        self.status_label.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY}px; color: {Colors.TEXT_MUTED};"
+        )
+        root.addWidget(self.status_label, alignment=Qt.AlignCenter)
+
+        # -- Elapsed-time ticker -----------------------------------------------
+        # Ticks every second while the worker runs. Gives continuous visual
+        # proof the UI is alive during long phases (model load, OCR).
+        self.elapsed_label = QLabel("0s")
+        self.elapsed_label.setAlignment(Qt.AlignCenter)
+        self.elapsed_label.setStyleSheet(
+            f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED};"
+        )
+        root.addWidget(self.elapsed_label, alignment=Qt.AlignCenter)
+
+        self._elapsed_seconds = 0
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._tick_elapsed)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -332,13 +375,17 @@ class LoadingScreen(QWidget):
         self._payload = payload
         self._progress = 0
         self._current_displayed_idx = 0
-        self._pending_steps.clear()
+        self._next_step = None
         self._pending_result = None
         self._step_timer.stop()
 
         self.current_stages = [text for _, text in STATUS_STEPS]
         self.percent_label.setText("0%")
         self.progress_bar.setValue(0)
+        self.status_label.setText("")
+        self.elapsed_label.setText("0s")
+        self._elapsed_seconds = 0
+        self._elapsed_timer.start()
         self.checklist.set_stages(self.current_stages)
         self.checklist.update_progress(0)
         
@@ -355,24 +402,35 @@ class LoadingScreen(QWidget):
     # Step sequencer helpers
     # ------------------------------------------------------------------
 
+    def _tick_elapsed(self):
+        self._elapsed_seconds += 1
+        self.elapsed_label.setText(f"{self._elapsed_seconds}s")
+
     def _enqueue_step(self, target_idx: int, target_pct: int, message: str):
-        """Buffer a step change; the timer will display them one at a time."""
-        self._pending_steps.append((target_idx, target_pct, message))
-        # Start the timer only if it's not already running
+        """Arm the latest step state. Rapid updates replace (coalesce) the armed
+        step instead of building a backlog, so the UI never replays stale
+        progress and always converges on the current state quickly."""
+        self._next_step = (target_idx, target_pct, message)
+        # Fire immediately for the first step if the timer is idle
         if not self._step_timer.isActive():
-            self._step_timer.start(0)  # fire immediately for the first one
+            self._step_timer.start(0)
 
     def _advance_step(self):
-        """Called by _step_timer – display the next pending step."""
-        if not self._pending_steps:
-            # Queue drained – if we were holding a final result, emit it now
+        """Called by _step_timer – display the armed step (if any)."""
+        if self._next_step is None:
+            # No pending work – if we were holding a final result, emit it now
             if self._pending_result is not None:
                 self._emit_finished()
             return
 
-        target_idx, target_pct, message = self._pending_steps.popleft()
+        target_idx, target_pct, message = self._next_step
+        self._next_step = None
 
-        # Update progress bar and label smoothly
+        # Update live status text so the user always sees what's happening
+        if message:
+            self.status_label.setText(message)
+
+        # Update progress bar and label
         self.progress_bar.setValue(target_pct)
         self.percent_label.setText(f"{target_pct}%")
 
@@ -381,13 +439,9 @@ class LoadingScreen(QWidget):
             self._current_displayed_idx = target_idx
             self.checklist.update_progress(target_idx)
 
-        # Schedule the next step after the display delay
-        if self._pending_steps:
+        # Keep going while a new step is armed or we're holding a final result
+        if self._next_step is not None or self._pending_result is not None:
             self._step_timer.start(_STEP_DISPLAY_MS)
-        else:
-            # No more steps – if we're holding a result, wait one more beat
-            if self._pending_result is not None:
-                self._step_timer.start(_STEP_DISPLAY_MS)
 
     # ------------------------------------------------------------------
     # Worker signal handlers
@@ -430,6 +484,10 @@ class LoadingScreen(QWidget):
         self._enqueue_step(target_idx, percent, message)
 
     def _on_analysis_finished(self, result: dict):
+        if not result.get("error"):
+            from gui.notifications import notify_analysis_complete
+            notify_analysis_complete(result.get("score", 0))
+
         # Don't emit finished immediately – let the step queue drain first
         # so every stage is visible for at least _STEP_DISPLAY_MS
         self._pending_result = result
@@ -440,6 +498,7 @@ class LoadingScreen(QWidget):
             self._step_timer.start(_STEP_DISPLAY_MS)
 
     def _emit_finished(self):
+        self._elapsed_timer.stop()
         self.ring.stop()
         self.progress_bar.setValue(100)
         self.percent_label.setText("100%")

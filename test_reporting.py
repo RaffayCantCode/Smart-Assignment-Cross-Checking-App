@@ -57,7 +57,7 @@ def test_builder():
     
     assert model.left_document.paragraphs[0].primary_match_type == MatchType.EXACT
     assert model.left_document.paragraphs[1].primary_match_type == MatchType.PARTIAL
-    assert model.left_document.paragraphs[2].primary_match_type == MatchType.NONE
+    assert model.left_document.paragraphs[2].primary_match_type == MatchType.UNIQUE
     
     assert model.left_document.paragraphs[0].is_matched == True
     assert model.left_document.paragraphs[1].is_matched == True

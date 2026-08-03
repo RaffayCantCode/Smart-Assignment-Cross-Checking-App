@@ -1,12 +1,13 @@
 """
 main.py
 
-Entry point. Wires the five screens (home, upload, loading, results, settings)
+Entry point. Wires the six screens (home, upload, loading, results, settings, report)
 together via a QStackedWidget. Implements a smooth page transition inline.
 """
 
 import sys
 import pydoc
+import threading
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QGraphicsOpacityEffect
@@ -17,6 +18,8 @@ from gui.upload import UploadScreen
 from gui.loading import LoadingScreen
 from gui.results import ResultsScreen
 from gui.settings import SettingsScreen
+from gui.report import ReportScreen
+from backend.engines.embedding_engine import preload_model
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +53,7 @@ class MainWindow(QMainWindow):
         self.loading_screen = LoadingScreen()
         self.results_screen = ResultsScreen()
         self.settings_screen = SettingsScreen()
+        self.report_screen = ReportScreen()
 
         for screen in (
             self.home_screen,
@@ -57,6 +61,7 @@ class MainWindow(QMainWindow):
             self.loading_screen,
             self.results_screen,
             self.settings_screen,
+            self.report_screen,
         ):
             self.stack.addWidget(screen)
             # Setup opacity effect for transitions
@@ -75,8 +80,10 @@ class MainWindow(QMainWindow):
         
         self.results_screen.restart_requested.connect(self._go_to_recheck)
         self.results_screen.new_check_requested.connect(self._go_to_home)
-        
+        self.results_screen.report_requested.connect(self._go_to_report)
+
         self.settings_screen.back_requested.connect(self._go_to_home)
+        self.report_screen.back_requested.connect(self._go_to_results_display)
         self.settings_screen.theme_changed.connect(self._on_theme_changed)
 
         if initial:
@@ -152,6 +159,13 @@ class MainWindow(QMainWindow):
         self.results_screen.display_results(payload)
         self._fade_to(self.results_screen)
 
+    def _go_to_results_display(self):
+        self._fade_to(self.results_screen)
+
+    def _go_to_report(self, raw_result):
+        self.report_screen.load_comparison(raw_result)
+        self._fade_to(self.report_screen)
+
 
 def main():
     app = QApplication(sys.argv)
@@ -159,6 +173,11 @@ def main():
     app.setStyleSheet(build_stylesheet())
     window = MainWindow()
     window.show()
+
+    # Preload the AI model in the background so the first analysis doesn't
+    # stall on the loading screen. Runs once per app launch.
+    threading.Thread(target=preload_model, daemon=True).start()
+
     sys.exit(app.exec())
 
 

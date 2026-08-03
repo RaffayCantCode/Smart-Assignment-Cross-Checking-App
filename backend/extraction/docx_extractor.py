@@ -6,6 +6,7 @@ from ..domain.document import (
     Document, DocumentSource, DocumentContent, ExtractionInfo,
     ExtractionMethod, Paragraph, Sentence
 )
+from ..engines.base import EngineConfig
 from ..text_preprocessing import clean_text, extract_paragraphs, tokenize_sentences
 from ..utils import FileProcessingError
 
@@ -26,6 +27,7 @@ class DocxExtractor(TextExtractor):
         self,
         file_path: str,
         progress_callback: Optional[ProgressCallback] = None,
+        config: Optional[EngineConfig] = None,
     ) -> Document:
         if docx is None:
             raise FileProcessingError("python-docx is not installed. Cannot read DOCX.")
@@ -38,7 +40,13 @@ class DocxExtractor(TextExtractor):
         except Exception as e:
             raise FileProcessingError(f"Error reading DOCX {file_path}: {e}")
 
-        clean_txt = clean_text(raw_text)
+        clean_txt = clean_text(
+            raw_text,
+            ignore_quotations=config.ignore_quotations if config else False,
+            ignore_references=config.ignore_references if config else False,
+            ignore_bibliography=config.ignore_bibliography if config else False,
+            ignore_formatting=config.ignore_formatting if config else False,
+        )
         para_texts = extract_paragraphs(clean_txt)
         
         paragraphs = []

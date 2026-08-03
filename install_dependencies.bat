@@ -4,7 +4,8 @@ setlocal enabledelayedexpansion
 REM ============================================================
 REM  install_dependencies.bat
 REM
-REM  Installs Python (if not found) and all required libraries
+REM  Installs Python (if not found), the required Python libraries,
+REM  Tesseract OCR (for scanned-document support), and NLTK data
 REM  for the Smart Assignment Cross-Checking App.
 REM ============================================================
 
@@ -37,7 +38,7 @@ echo.
 where winget >nul 2>nul
 if %errorlevel%==0 (
     echo Installing Python via winget, this can take a few minutes...
-    winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+    winget install -e --id Python.Python.3.13 --silent --accept-package-agreements --accept-source-agreements
     if !errorlevel! neq 0 (
         echo winget install did not succeed, will try direct download instead...
         goto :download_installer
@@ -47,7 +48,7 @@ if %errorlevel%==0 (
 
 :download_installer
 echo Downloading the official Python installer...
-set "PYINSTALLER_URL=https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
+set "PYINSTALLER_URL=https://www.python.org/ftp/python/3.13.14/python-3.13.14-amd64.exe"
 set "PYINSTALLER_FILE=%TEMP%\python-installer.exe"
 powershell -NoProfile -Command "Invoke-WebRequest -Uri '%PYINSTALLER_URL%' -OutFile '%PYINSTALLER_FILE%'"
 if not exist "%PYINSTALLER_FILE%" (
@@ -105,7 +106,7 @@ echo Using Python: %PYEXE%
 "%PYEXE%" --version
 
 echo.
-echo Installing/upgrading dependencies (this can take a minute)...
+echo Installing/upgrading Python dependencies (this can take a minute)...
 "%PYEXE%" -m pip install --upgrade pip
 "%PYEXE%" -m pip install -r requirements.txt
 "%PYEXE%" -m pip install pyinstaller
@@ -115,6 +116,59 @@ if %errorlevel% neq 0 (
     echo ERROR: pip install failed. Scroll up to see what went wrong.
     pause
     exit /b 1
+)
+
+echo.
+echo Downloading NLTK sentence-splitting data...
+"%PYEXE%" -m nltk.downloader punkt punkt_tab >nul 2>nul
+if %errorlevel% neq 0 (
+    echo WARNING: Could not pre-download NLTK data. The app will try to
+    echo download it automatically at run time.
+) else (
+    echo NLTK data ready.
+)
+
+REM --- Tesseract OCR (for scanned / image documents) -------------------------
+echo.
+echo Checking for Tesseract OCR...
+set "TESSERACT_FOUND="
+where tesseract >nul 2>nul
+if %errorlevel%==0 set "TESSERACT_FOUND=1"
+
+if not defined TESSERACT_FOUND (
+    if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" set "TESSERACT_FOUND=1"
+)
+if not defined TESSERACT_FOUND (
+    if exist "C:\Program Files (x86)\Tesseract-OCR\tesseract.exe" set "TESSERACT_FOUND=1"
+)
+
+if defined TESSERACT_FOUND (
+    echo Tesseract OCR already installed.
+) else (
+    echo Tesseract OCR was not found. Installing it now...
+    where winget >nul 2>nul
+    if %errorlevel%==0 (
+        winget install -e --id UB-Mannheim.TesseractOCR --silent --accept-package-agreements --accept-source-agreements
+        if !errorlevel! neq 0 (
+            echo.
+            echo ============================================================
+            echo  WARNING: Could not install Tesseract OCR automatically.
+            echo  Scanned/image documents will NOT be readable until it is
+            echo  installed. Download it manually from:
+            echo      https://github.com/UB-Mannheim/tesseract/wiki
+            echo  and make sure the Tesseract command is on your PATH.
+            echo ============================================================
+        ) else (
+            echo Tesseract OCR installed successfully.
+        )
+    ) else (
+        echo.
+        echo ============================================================
+        echo  WARNING: winget not found - Tesseract OCR was skipped.
+        echo  Scanned/image documents will NOT be readable.
+        echo  The typed-text (digital) comparison still works without it.
+        echo ============================================================
+    )
 )
 
 echo.

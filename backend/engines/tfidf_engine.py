@@ -14,11 +14,8 @@ class TFIDFEngine(ComparisonEngine):
     def engine_name(self) -> str: return self.ENGINE_NAME
 
     def is_available(self) -> bool:
-        try:
-            import sklearn
-            return True
-        except ImportError:
-            return False
+        import importlib.util
+        return importlib.util.find_spec("sklearn") is not None
 
     @property
     def capabilities(self) -> EngineCapabilities:

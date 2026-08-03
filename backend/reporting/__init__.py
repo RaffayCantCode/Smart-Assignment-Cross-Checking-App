@@ -1,4 +1,11 @@
-from .model import ReportModel, ReportDocument, ReportParagraph, ReportSpan, ReportMatch, ReportStatistics, MatchType
+from .model import (
+    ReportModel, ReportDocument, ReportParagraph, ReportSpan,
+    ReportMatch, ReportStatistics, MatchType, SearchResult,
+)
 from .builder import ReportBuilder
 
-__all__ = ["ReportModel", "ReportDocument", "ReportParagraph", "ReportSpan", "ReportMatch", "ReportStatistics", "MatchType", "ReportBuilder"]
+__all__ = [
+    "ReportModel", "ReportDocument", "ReportParagraph", "ReportSpan",
+    "ReportMatch", "ReportStatistics", "MatchType", "SearchResult",
+    "ReportBuilder",
+]

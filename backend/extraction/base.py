@@ -1,5 +1,6 @@
 from typing import Protocol, runtime_checkable, Callable, Optional
 from ..domain.document import Document
+from ..engines.base import EngineConfig
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -18,6 +19,7 @@ class TextExtractor(Protocol):
         self,
         file_path: str,
         progress_callback: Optional[ProgressCallback] = None,
+        config: Optional[EngineConfig] = None,
     ) -> Document:
         """
         Extracts and returns a complete Document.

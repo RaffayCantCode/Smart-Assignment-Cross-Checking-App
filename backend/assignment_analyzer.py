@@ -2,6 +2,7 @@ import time
 import re
 import dataclasses
 import os
+import concurrent.futures
 from typing import Callable, Optional
 
 from .extraction import DocumentLoader
@@ -37,7 +38,9 @@ class AssignmentAnalyzer:
         file_path_2: str,
     ) -> dict:
         start_time = time.time()
-        
+
+        self._progress(5, "Preparing assignments...")
+
         try:
             engine = EngineRegistry.get(self.engine_id)
         except Exception as e:
@@ -46,20 +49,23 @@ class AssignmentAnalyzer:
         self._progress(10, "Preparing assignments")
         
         try:
-            doc_a = self._loader.load(
-                file_path_1,
-                self._sub_progress(10, 25, "Reading document 1")
-            )
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fut_a = executor.submit(
+                    self._loader.load,
+                    file_path_1,
+                    self._sub_progress(10, 25, "Reading document 1"),
+                    self.config,
+                )
+                fut_b = executor.submit(
+                    self._loader.load,
+                    file_path_2,
+                    self._sub_progress(25, 40, "Reading document 2"),
+                    self.config,
+                )
+                doc_a = fut_a.result()
+                doc_b = fut_b.result()
         except Exception as e:
             return self._create_error_dict(file_path_1, file_path_2, str(e), start_time)
-
-        try:
-            doc_b = self._loader.load(
-                file_path_2,
-                self._sub_progress(25, 40, "Reading document 2")
-            )
-        except Exception as e:
-            return self._create_error_dict(file_path_1, file_path_2, str(e), start_time, doc_a)
 
         self._progress(40, "Validating documents")
         if doc_a.is_empty or doc_b.is_empty:

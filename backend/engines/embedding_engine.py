@@ -1,4 +1,5 @@
 import time
+import threading
 import numpy as np
 from typing import Optional
 
@@ -6,7 +7,7 @@ from .base import ComparisonEngine, EngineCapabilities, EngineConfig, ProgressCa
 from ..domain.document import Document
 from ..domain.comparison import (
     ComparisonResult, SimilarityStatistics, SimilarityBand,
-    MatchedParagraph, MatchedSentence
+    MatchedParagraph, MatchedSentence, MatchedSpan
 )
 
 class EmbeddingEngine(ComparisonEngine):
@@ -14,8 +15,12 @@ class EmbeddingEngine(ComparisonEngine):
     ENGINE_NAME = "Sentence Embedding (MiniLM-L6)"
     MODEL_NAME  = "all-MiniLM-L6-v2"
 
+    _shared_model = None
+    _embedding_cache = {}
+    _load_lock = threading.Lock()
+
     def __init__(self):
-        self._model = None
+        pass
 
     @property
     def engine_id(self) -> str: return self.ENGINE_ID
@@ -32,21 +37,113 @@ class EmbeddingEngine(ComparisonEngine):
             multilingual=False,
             offline=True,
             requires_gpu=False,
-            approximate_time_per_para=0.02,
+            approximate_time_per_para=0.005,
         )
 
     def is_available(self) -> bool:
-        try:
-            import sentence_transformers
-            import sklearn
-            return True
-        except ImportError:
-            return False
+        # Fast availability check - uses find_spec (no heavy torch import here).
+        # The actual model + dependencies are imported lazily inside compare().
+        import importlib.util
+        return (
+            importlib.util.find_spec("sentence_transformers") is not None
+            and importlib.util.find_spec("sklearn") is not None
+        )
 
     def _ensure_model_loaded(self) -> None:
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.MODEL_NAME)
+        if EmbeddingEngine._shared_model is None:
+            with EmbeddingEngine._load_lock:
+                if EmbeddingEngine._shared_model is None:
+                    from sentence_transformers import SentenceTransformer
+                    EmbeddingEngine._shared_model = SentenceTransformer(self.MODEL_NAME)
+
+    def _get_embeddings(self, texts: list[str], config: EngineConfig) -> np.ndarray:
+        if not texts:
+            return np.array([])
+
+        if not config.enable_cache:
+            return EmbeddingEngine._shared_model.encode(
+                texts,
+                batch_size=config.batch_size,
+                show_progress_bar=False
+            )
+
+        cached_vectors = []
+        missing_indices = []
+        missing_texts = []
+
+        for i, text in enumerate(texts):
+            if text in EmbeddingEngine._embedding_cache:
+                cached_vectors.append((i, EmbeddingEngine._embedding_cache[text]))
+            else:
+                missing_indices.append(i)
+                missing_texts.append(text)
+
+        if missing_texts:
+            new_embeds = EmbeddingEngine._shared_model.encode(
+                missing_texts,
+                batch_size=config.batch_size,
+                show_progress_bar=False
+            )
+            for text, vec in zip(missing_texts, new_embeds):
+                EmbeddingEngine._embedding_cache[text] = vec
+            for idx, vec in zip(missing_indices, new_embeds):
+                cached_vectors.append((idx, vec))
+
+        cached_vectors.sort(key=lambda x: x[0])
+        return np.array([v for _, v in cached_vectors])
+
+    def _match_sentences(self, para_a, para_b, config: EngineConfig) -> tuple[MatchedSentence, ...]:
+        """Compares the sentences of two matched paragraphs and returns the
+        sentence pairs grouped above the sentence threshold. Each matched
+        sentence exposes a character span (paragraph-relative) so the report
+        can highlight the actually-matching text within a paragraph."""
+        sents_a = para_a.sentences
+        sents_b = para_b.sentences
+        if not sents_a or not sents_b:
+            return ()
+
+        try:
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            texts_a = [s.text for s in sents_a]
+            texts_b = [s.text for s in sents_b]
+            emb_a = self._get_embeddings(texts_a, config)
+            emb_b = self._get_embeddings(texts_b, config)
+            if len(emb_a) == 0 or len(emb_b) == 0:
+                return ()
+            sim = cosine_similarity(emb_a, emb_b)
+
+            matches = []
+            matched_b = set()
+            for i, sa in enumerate(sents_a):
+                row = sim[i]
+                if len(row) == 0:
+                    continue
+                j = int(np.argmax(row))
+                score = float(row[j])
+                if score >= config.sentence_threshold and j not in matched_b:
+                    sb = sents_b[j]
+                    matched_b.add(j)
+                    span = MatchedSpan(
+                        text_a=sa.text,
+                        text_b=sb.text,
+                        score=score,
+                        char_start_a=sa.char_start,
+                        char_end_a=sa.char_end,
+                        char_start_b=sb.char_start,
+                        char_end_b=sb.char_end,
+                    )
+                    matches.append(MatchedSentence(
+                        sentence_a=sa,
+                        sentence_b=sb,
+                        score=score,
+                        spans=(span,),
+                    ))
+            return tuple(matches)
+        except Exception:
+            # Sentence-level matching is best-effort; fall back to no spans
+            # so a failure here never aborts the whole comparison.
+            return ()
 
     def compare(
         self,
@@ -56,24 +153,30 @@ class EmbeddingEngine(ComparisonEngine):
         progress_callback: Optional[ProgressCallback] = None,
     ) -> ComparisonResult:
         start_time = time.time()
-        
+
+        if progress_callback:
+            progress_callback(2, "Loading AI model (first run may take a while to download)")
+
         try:
             self._ensure_model_loaded()
         except Exception as e:
             return ComparisonResult.error_result(doc_a, doc_b, f"Failed to load model: {e}", self.ENGINE_ID, time.time() - start_time)
 
+        if progress_callback:
+            progress_callback(3, "AI model ready")
+
         try:
             from sklearn.metrics.pairwise import cosine_similarity
             
             if progress_callback: progress_callback(10, "Encoding document 1")
-            paras_a = doc_a.paragraphs
+            paras_a = doc_a.paragraphs[:config.max_paragraphs] if config.max_paragraphs else doc_a.paragraphs
             texts_a = [p.text for p in paras_a]
-            embeds_a = self._model.encode(texts_a, show_progress_bar=False) if texts_a else np.array([])
+            embeds_a = self._get_embeddings(texts_a, config) if texts_a else np.array([])
             
             if progress_callback: progress_callback(40, "Encoding document 2")
-            paras_b = doc_b.paragraphs
+            paras_b = doc_b.paragraphs[:config.max_paragraphs] if config.max_paragraphs else doc_b.paragraphs
             texts_b = [p.text for p in paras_b]
-            embeds_b = self._model.encode(texts_b, show_progress_bar=False) if texts_b else np.array([])
+            embeds_b = self._get_embeddings(texts_b, config) if texts_b else np.array([])
 
             if progress_callback: progress_callback(70, "Computing similarities")
             
@@ -92,8 +195,12 @@ class EmbeddingEngine(ComparisonEngine):
                 best_score = float(row[best_idx])
                 
                 if best_score >= config.similarity_threshold:
-                    matched_sentences = ()
-                    # Phase 2 will implement optional sentence level matching
+                    if config.enable_sentence_matching:
+                        matched_sentences = self._match_sentences(
+                            paras_a[i], paras_b[best_idx], config
+                        )
+                    else:
+                        matched_sentences = ()
                     
                     matched_paras.append(MatchedParagraph(
                         paragraph_a=paras_a[i],
@@ -153,3 +260,10 @@ class EmbeddingEngine(ComparisonEngine):
             )
         except Exception as e:
             return ComparisonResult.error_result(doc_a, doc_b, f"Comparison error: {e}", self.ENGINE_ID, time.time() - start_time)
+
+
+def preload_model() -> None:
+    """Loads the shared embedding model once. Safe to call from a background
+    thread at app startup so analyses don't stall on first use."""
+    engine = EmbeddingEngine()
+    engine._ensure_model_loaded()

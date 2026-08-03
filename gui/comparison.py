@@ -10,12 +10,12 @@ Keeping these here means when the backend team wires up real file parsing,
 there is exactly ONE place that emits "a file was provided" signals.
 """
 
-from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QSize, QRectF
 from PySide6.QtWidgets import (
     QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QSizePolicy, QWidget
 )
-from PySide6.QtGui import QColor, QPainter, QPen, QBrush
+from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QLinearGradient
 
 from styles.theme import Colors, Fonts, Radius, Anim, Icons, IconSize, render_icon
 
@@ -99,23 +99,41 @@ class ModeCard(QFrame):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Background
-        painter.setBrush(QBrush(self._bg_color))
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        radius = Radius.LG if not self._selected else Radius.LG
+
+        # Soft gradient background for a lifted, modern surface
+        if self._selected:
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0, QColor(Colors.ACCENT_SOFT))
+            gradient.setColorAt(1, QColor(Colors.BG_SURFACE))
+            painter.setBrush(QBrush(gradient))
+        else:
+            painter.setBrush(QBrush(self._bg_color))
+
         # Border
         pen = QPen(self._border_color)
         pen.setWidth(2 if self._selected else 1)
         painter.setPen(pen)
-        
-        rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.drawRoundedRect(rect, Radius.LG, Radius.LG)
-        
+        painter.drawRoundedRect(rect, radius, radius)
+
+        # Left accent bar when selected
+        if self._selected:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(Colors.ACCENT)))
+            bar = QRectF(rect.x() + 3, rect.y() + 18, 4, rect.height() - 36)
+            painter.drawRoundedRect(bar, 2, 2)
+
         # Draw indicator if selected
         if self._selected:
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(QColor(Colors.ACCENT)))
             ind_rect = self.indicator.geometry()
-            painter.drawEllipse(ind_rect.adjusted(2, 2, -2, -2))
+            painter.drawEllipse(ind_rect.adjusted(0, 0, 0, 0))
+            painter.setPen(QPen(QColor("#FFFFFF")))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPoint(ind_rect.center())
 
     def set_selected(self, selected: bool):
         self._selected = selected

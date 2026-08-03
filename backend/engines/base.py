@@ -18,10 +18,16 @@ class EngineCapabilities:
 @dataclass(frozen=True)
 class EngineConfig:
     similarity_threshold: float = 0.75
-    sentence_threshold: float = 0.80
-    enable_sentence_matching: bool = False
+    sentence_threshold: float = 0.55
+    enable_sentence_matching: bool = True
     max_paragraphs: int = 300
     batch_size: int = 64
+    ignore_quotations: bool = False
+    ignore_references: bool = False
+    ignore_bibliography: bool = False
+    ignore_formatting: bool = False
+    max_threads: str = "Auto"
+    enable_cache: bool = True
 
 @runtime_checkable
 class ComparisonEngine(Protocol):

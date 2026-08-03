@@ -13,8 +13,11 @@ echo ============================================================
 echo  SMART ASSIGNMENT CROSS-CHECKING APP - BUILD SCRIPT
 echo ============================================================
 echo  [IMPORTANT NOTICE]
-echo  Building the standalone application packages deep AI model 
-echo  weights, PySide6 GUI binaries, and NLP dependency libraries.
+echo  Building the standalone application packages the PySide6 GUI binaries,
+echo  the NLP/AI libraries and the app code into a single folder.
+echo.
+echo  The AI model (MiniLM-L6) is NOT bundled - it is downloaded
+echo  automatically on the first analysis run (internet required once).
 echo.
 echo  This process CAN TAKE 5 TO 10 MINUTES to complete!
 echo  Please be patient and DO NOT close this window.
@@ -65,6 +68,23 @@ exit /b 0
 :found
 echo Using Python: %PYEXE%
 "%PYEXE%" --version
+
+echo.
+REM --- Optional: warn if Tesseract OCR is not installed ----------------------
+set "TESSERACT_FOUND="
+where tesseract >nul 2>nul
+if %errorlevel%==0 set "TESSERACT_FOUND=1"
+if not defined TESSERACT_FOUND (
+    if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" set "TESSERACT_FOUND=1"
+)
+if not defined TESSERACT_FOUND (
+    echo.
+    echo  [WARNING] Tesseract OCR was not found on this system.
+    echo  The built app will still compare typed documents, but scanned /
+    echo  image documents will not be readable until Tesseract is installed.
+    echo  Install it by re-running install_dependencies.bat.
+    echo.
+)
 
 echo.
 echo Cleaning previous build artifacts...
