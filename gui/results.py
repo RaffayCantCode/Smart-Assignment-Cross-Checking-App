@@ -249,7 +249,7 @@ class ResultsScreen(QWidget):
             return
         model = ReportBuilder.build(self._last_raw_result)
         export_cfg = get_export_config()
-        default_fmt = export_cfg.get("export_format", "html")
+        default_fmt = export_cfg.get("export_format", "pdf")
         assignment_name = model.left_document.title or "Assignment"
         suggested_name = build_report_filename(assignment_name, default_fmt)
 

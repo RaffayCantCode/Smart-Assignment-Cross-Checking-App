@@ -1,14 +1,40 @@
 import os
 import sys
 import zipfile
+import shutil
 import subprocess
-from PySide6.QtCore import Qt, QThread, Signal, Slot
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QProgressBar, QCheckBox,
-    QStackedWidget, QFileDialog, QFrame, QSizePolicy
+    QStackedWidget, QFileDialog, QFrame,
 )
+
+"""
+Setup.py
+
+The installer. When a user runs this (as setup.exe or via `python Setup.py`),
+it installs the Smart Assignment Cross-Checking App into a folder containing
+SmartAssignmentChecker.exe and every supporting file.
+
+The app package (SmartAssignmentChecker-App.zip) is located from:
+  1. Inside this frozen executable (bundled by build_setup.py via --add-data).
+  2. Next to this script.
+  3. The project's dist/ folder.
+  4. A ready-made dist/SmartAssignmentChecker/ application folder.
+
+You normally never edit this file - re-run `python build_setup.py` to produce a
+fresh shareable setup.exe.
+"""
+
+APP_NAME = "Smart Assignment Checker"
+LAUNCHER = "SmartAssignmentChecker.exe"
+APP_FOLDER_NAME = "SmartAssignmentChecker"
+PACKAGE_ZIP = "SmartAssignmentChecker-Source.zip"
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
+
 
 # ----------------------------------------------------------------------
 # Design Constants (Zinc Dark Theme)
@@ -24,8 +50,9 @@ class Colors:
     ACCENT = "#6366F1"
     ACCENT_HOVER = "#818CF8"
     ACCENT_PRESSED = "#4F46E5"
-    ACCENT_SOFT = "#1E1B4B"
     SUCCESS = "#22C55E"
+    DANGER = "#EF4444"
+
 
 class Fonts:
     FAMILY = "Segoe UI Variable, Segoe UI, Inter, -apple-system, Arial, sans-serif"
@@ -34,46 +61,90 @@ class Fonts:
     SIZE_BODY = 12
     SIZE_SMALL = 10
 
+
 class Radius:
     MD = 8
     LG = 12
 
-# ----------------------------------------------------------------------
-# Helper to resolve bundled resources
-# ----------------------------------------------------------------------
-def get_resource_path(relative_path):
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
 
 # ----------------------------------------------------------------------
-# Background extraction thread
+# Locate the installable package
 # ----------------------------------------------------------------------
-class UnzipWorker(QThread):
+def resolve_package_path():
+    """Locate the installable package: the zip, or a ready-made app folder."""
+    search_dirs = []
+    if hasattr(sys, "_MEIPASS"):
+        search_dirs.append(sys._MEIPASS)
+    search_dirs.append(PROJECT_ROOT)
+    search_dirs.append(DIST_DIR)
+    search_dirs.append(os.getcwd())
+
+    seen = set()
+    for d in search_dirs:
+        if d in seen:
+            continue
+        seen.add(d)
+        candidate = os.path.join(d, PACKAGE_ZIP)
+        if os.path.isfile(candidate):
+            return candidate
+
+    for d in search_dirs:
+        if d in seen:
+            continue
+        seen.add(d)
+        folder = os.path.join(d, APP_FOLDER_NAME)
+        if os.path.isfile(os.path.join(folder, "main.py")):
+            return folder
+    return None
+
+
+# ----------------------------------------------------------------------
+# Background installation thread
+# ----------------------------------------------------------------------
+class InstallWorker(QThread):
     progress_updated = Signal(int)
     status_updated = Signal(str)
     finished = Signal(bool, str)
 
-    def __init__(self, zip_path, dest_dir):
+    def __init__(self, source, dest_dir):
         super().__init__()
-        self.zip_path = zip_path
+        self.source = source
         self.dest_dir = dest_dir
+
+    def _run_copy_folder(self):
+        items = os.listdir(self.source)
+        total = len(items)
+        for i, name in enumerate(items):
+            src = os.path.join(self.source, name)
+            dst = os.path.join(self.dest_dir, name)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+            percent = int(((i + 1) / total) * 100)
+            self.progress_updated.emit(percent)
+            self.status_updated.emit(f"Copying: {name}")
+        self.finished.emit(True, "Success")
 
     def run(self):
         try:
-            if not os.path.exists(self.zip_path):
-                self.finished.emit(False, f"Source package not found: {self.zip_path}")
-                return
-
             os.makedirs(self.dest_dir, exist_ok=True)
 
-            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
+            if os.path.isdir(self.source):
+                self._run_copy_folder()
+                return
+
+            if not os.path.isfile(self.source):
+                self.finished.emit(False, f"Package not found: {self.source}")
+                return
+
+            with zipfile.ZipFile(self.source, "r") as zip_ref:
                 all_files = zip_ref.infolist()
                 total_files = len(all_files)
                 if total_files == 0:
-                    self.finished.emit(False, "Source package is empty.")
+                    self.finished.emit(False, "Package is empty.")
                     return
-
                 for i, file_info in enumerate(all_files):
                     zip_ref.extract(file_info, self.dest_dir)
                     percent = int(((i + 1) / total_files) * 100)
@@ -84,20 +155,21 @@ class UnzipWorker(QThread):
         except Exception as e:
             self.finished.emit(False, str(e))
 
+
 # ----------------------------------------------------------------------
-# Main Wizard Window
+# Setup wizard
 # ----------------------------------------------------------------------
-class InstallerWizard(QMainWindow):
+class SetupWizard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Smart Assignment Checker Installer")
-        self.setFixedSize(550, 400)
+        self.setWindowTitle(f"{APP_NAME} — Setup")
+        self.setFixedSize(580, 440)
 
-        # Default installation directory
+        self.package_source = resolve_package_path()
+
         local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~"))
-        self.install_dir = os.path.join(local_app_data, "SmartAssignmentChecker")
+        self.install_dir = os.path.join(local_app_data, APP_FOLDER_NAME)
 
-        # Set central widget and main dark stylesheet
         self.central_widget = QWidget()
         self.central_widget.setObjectName("CentralWidget")
         self.setCentralWidget(self.central_widget)
@@ -127,6 +199,10 @@ class InstallerWizard(QMainWindow):
             }}
             QPushButton#PrimaryButton:pressed {{
                 background-color: {Colors.ACCENT_PRESSED};
+            }}
+            QPushButton#PrimaryButton:disabled {{
+                background-color: {Colors.BG_SURFACE};
+                color: {Colors.TEXT_MUTED};
             }}
             QPushButton#SecondaryButton {{
                 background-color: transparent;
@@ -181,11 +257,9 @@ class InstallerWizard(QMainWindow):
             }}
         """)
 
-        # Main layout
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(30, 30, 30, 30)
 
-        # Header card (styled frame)
         self.header_card = QFrame()
         self.header_card.setObjectName("HeaderCard")
         self.header_card.setStyleSheet(f"""
@@ -199,7 +273,7 @@ class InstallerWizard(QMainWindow):
         self.header_layout.setContentsMargins(20, 20, 20, 20)
         self.header_layout.setSpacing(8)
 
-        self.title_label = QLabel("Smart Assignment Checker")
+        self.title_label = QLabel(APP_NAME)
         self.title_label.setStyleSheet(f"font-size: {Fonts.SIZE_H1}px; font-weight: 700;")
         self.header_layout.addWidget(self.title_label)
 
@@ -210,7 +284,6 @@ class InstallerWizard(QMainWindow):
         self.main_layout.addWidget(self.header_card)
         self.main_layout.addSpacing(20)
 
-        # Stacked pages
         self.pages = QStackedWidget()
         self.main_layout.addWidget(self.pages)
 
@@ -219,7 +292,6 @@ class InstallerWizard(QMainWindow):
         self._setup_page_installing()
         self._setup_page_finished()
 
-        # Bottom buttons row
         self.button_layout = QHBoxLayout()
         self.btn_back = QPushButton("Back")
         self.btn_back.setObjectName("SecondaryButton")
@@ -236,8 +308,8 @@ class InstallerWizard(QMainWindow):
 
         self.main_layout.addLayout(self.button_layout)
 
-    # ------------------------------------------------------------------
-    # Wizard Pages Setup
+        self._show_package_status()
+
     # ------------------------------------------------------------------
     def _setup_page_welcome(self):
         page = QWidget()
@@ -246,14 +318,21 @@ class InstallerWizard(QMainWindow):
         layout.setSpacing(10)
 
         desc = QLabel(
-            "This setup wizard will install the Smart Assignment Cross-Checking App on your computer.\n\n"
-            "The similarity analysis engine, reports, PDF exporter, and modern dark interface will be installed."
+            "This setup will install the Smart Assignment Cross-Checking App on your "
+            "computer.\n\n"
+            "The similarity analysis engine, reports, PDF exporter, and modern interface will "
+            "be installed into a single folder with the executable and all supporting files."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; color: {Colors.TEXT_SECONDARY}; line-height: 1.4;")
         layout.addWidget(desc)
-        layout.addStretch()
 
+        self.lbl_package = QLabel("")
+        self.lbl_package.setWordWrap(True)
+        self.lbl_package.setStyleSheet(f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED};")
+        layout.addWidget(self.lbl_package)
+
+        layout.addStretch()
         self.pages.addWidget(page)
 
     def _setup_page_dir(self):
@@ -277,7 +356,7 @@ class InstallerWizard(QMainWindow):
         row.addWidget(btn_browse)
         layout.addLayout(row)
 
-        lbl_space = QLabel("Requires at least 150 MB of free disk space.")
+        lbl_space = QLabel("All application files (executable + folders) are installed inside this single folder.")
         lbl_space.setStyleSheet(f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED};")
         layout.addWidget(lbl_space)
         layout.addStretch()
@@ -295,6 +374,7 @@ class InstallerWizard(QMainWindow):
         layout.addWidget(self.lbl_status)
 
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
@@ -312,14 +392,21 @@ class InstallerWizard(QMainWindow):
         layout.setSpacing(15)
 
         self.lbl_finish_status = QLabel("Installation Completed successfully!")
-        self.lbl_finish_status.setStyleSheet(f"font-size: {Fonts.SIZE_H2}px; font-weight: 700; color: {Colors.SUCCESS};")
+        self.lbl_finish_status.setStyleSheet(
+            f"font-size: {Fonts.SIZE_H2}px; font-weight: 700; color: {Colors.SUCCESS};"
+        )
         layout.addWidget(self.lbl_finish_status)
+
+        self.lbl_finish_detail = QLabel("")
+        self.lbl_finish_detail.setWordWrap(True)
+        self.lbl_finish_detail.setStyleSheet(f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED};")
+        layout.addWidget(self.lbl_finish_detail)
 
         self.chk_shortcut = QCheckBox("Create Desktop Shortcut")
         self.chk_shortcut.setChecked(True)
         layout.addWidget(self.chk_shortcut)
 
-        self.chk_launch = QCheckBox("Launch Smart Assignment Checker")
+        self.chk_launch = QCheckBox("Launch after closing setup")
         self.chk_launch.setChecked(True)
         layout.addWidget(self.chk_launch)
         layout.addStretch()
@@ -327,8 +414,16 @@ class InstallerWizard(QMainWindow):
         self.pages.addWidget(page)
 
     # ------------------------------------------------------------------
-    # Button Logic / Navigation
-    # ------------------------------------------------------------------
+    def _show_package_status(self):
+        if self.package_source:
+            self.lbl_package.setText("The application is ready to install.")
+        else:
+            self.lbl_package.setText(
+                "The application package was not found in this setup. "
+                "This setup file may be damaged or incomplete."
+            )
+            self.btn_next.setEnabled(False)
+
     def _on_dir_changed(self, text):
         self.install_dir = text.strip()
 
@@ -340,17 +435,14 @@ class InstallerWizard(QMainWindow):
     def _next_page(self):
         curr = self.pages.currentIndex()
         if curr == 0:
-            # Go to folder selection
             self.pages.setCurrentIndex(1)
             self.btn_back.setVisible(True)
         elif curr == 1:
-            # Go to installation page and start install
             self.pages.setCurrentIndex(2)
             self.btn_back.setVisible(False)
             self.btn_next.setVisible(False)
             self._start_installation()
         elif curr == 3:
-            # Finished page - handle final actions and exit
             self._finalize_installation()
 
     def _prev_page(self):
@@ -360,69 +452,83 @@ class InstallerWizard(QMainWindow):
             self.btn_back.setVisible(False)
 
     # ------------------------------------------------------------------
-    # Installation Execution
-    # ------------------------------------------------------------------
-    def _start_installation(self):
-        self.lbl_status.setText("Installing application files...")
-        zip_path = get_resource_path("SmartAssignmentChecker-App.zip")
+    def update_progress(self, value):
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(value)
 
-        self.worker = UnzipWorker(zip_path, self.install_dir)
-        self.worker.progress_updated.connect(self.progress_bar.setValue)
-        self.worker.status_updated.connect(self.lbl_detail.setText)
-        self.worker.finished.connect(self._on_install_finished)
-        self.worker.start()
+    def update_status(self, text):
+        self.lbl_detail.setText(text)
 
     @Slot(bool, str)
     def _on_install_finished(self, success, message):
         if success:
+            self.lbl_finish_detail.setText(f"Installed to: {self.install_dir}")
             self.pages.setCurrentIndex(3)
             self.btn_next.setText("Finish")
             self.btn_next.setVisible(True)
         else:
-            self.pages.setCurrentIndex(2)
             self.lbl_status.setText("Installation failed.")
-            self.lbl_status.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; color: #EF4444;")
+            self.lbl_status.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; color: {Colors.DANGER};")
             self.lbl_detail.setText(message)
-            self.btn_back.setVisible(True)
-            self.btn_back.setText("Cancel")
-            self.btn_back.clicked.disconnect()
-            self.btn_back.clicked.connect(self.close)
+            self.btn_next.setText("Close")
+            self.btn_next.setVisible(True)
+            self.btn_next.clicked.disconnect()
+            self.btn_next.clicked.connect(self.close)
+
+    def _start_installation(self):
+        source = self.package_source or resolve_package_path()
+        if not source:
+            self.lbl_status.setText("Installation failed.")
+            self.lbl_status.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; color: {Colors.DANGER};")
+            self.lbl_detail.setText("Could not locate the application package.")
+            return
+
+        self.lbl_status.setText("Installing application files...")
+        self.worker = InstallWorker(source, self.install_dir)
+        self.worker.progress_updated.connect(self.update_progress)
+        self.worker.status_updated.connect(self.update_status)
+        self.worker.finished.connect(self._on_install_finished)
+        self.worker.start()
 
     def _finalize_installation(self):
-        target_exe = os.path.join(self.install_dir, "SmartAssignmentChecker.exe")
+        launcher = os.path.join(self.install_dir, LAUNCHER)
+        deps_script = os.path.join(self.install_dir, "Install Dependencies.bat")
 
-        # 1. Create Desktop shortcut via PowerShell if selected
-        if self.chk_shortcut.isChecked():
+        if self.chk_shortcut.isChecked() and os.path.isfile(launcher):
             try:
                 ps_cmd = f"""
                 $WshShell = New-Object -ComObject WScript.Shell
-                $Shortcut = $WshShell.CreateShortcut([System.IO.Path]::Combine([System.Environment]::GetFolderPath('Desktop'), 'Smart Assignment Checker.lnk'))
-                $Shortcut.TargetPath = '{target_exe}'
+                $Shortcut = $WshShell.CreateShortcut([System.IO.Path]::Combine([System.Environment]::GetFolderPath('Desktop'), '{APP_NAME}.lnk'))
+                $Shortcut.TargetPath = '{launcher}'
                 $Shortcut.WorkingDirectory = '{self.install_dir}'
+                $Shortcut.IconLocation = '{launcher},0'
                 $Shortcut.Save()
                 """
                 subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, check=True)
             except Exception as e:
                 print(f"Failed to create desktop shortcut: {e}")
 
-        # 2. Launch application if selected
         if self.chk_launch.isChecked():
-            try:
-                if os.path.exists(target_exe):
-                    subprocess.Popen([target_exe], cwd=self.install_dir)
-            except Exception as e:
-                print(f"Failed to launch application: {e}")
+            if os.path.isfile(launcher):
+                try:
+                    subprocess.Popen([launcher], cwd=self.install_dir)
+                except Exception as e:
+                    print(f"Failed to launch application: {e}")
+            elif os.path.isfile(deps_script):
+                try:
+                    subprocess.Popen([deps_script], cwd=self.install_dir, shell=True)
+                except Exception as e:
+                    print(f"Failed to open dependencies installer: {e}")
 
         self.close()
 
-# ----------------------------------------------------------------------
-# Application Entry Point
-# ----------------------------------------------------------------------
+
 def main():
     app = QApplication(sys.argv)
-    wizard = InstallerWizard()
+    wizard = SetupWizard()
     wizard.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

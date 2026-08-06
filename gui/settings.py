@@ -256,7 +256,7 @@ class SettingsScreen(QWidget):
         fmt_layout.addWidget(fmt_label)
         
         self.export_fmt_combo = QComboBox()
-        self.export_fmt_combo.addItems(["PDF", "HTML", "TXT"])
+        self.export_fmt_combo.addItems(["PDF", "HTML"])
         _style_combo(self.export_fmt_combo)
         self.export_fmt_combo.currentTextChanged.connect(self._save_export_format)
         fmt_layout.addWidget(self.export_fmt_combo)
@@ -367,7 +367,7 @@ class SettingsScreen(QWidget):
 
     def _load_settings(self):
         self.thresh_slider.setValue(int(self._settings.value("similarity_threshold", 75, type=int)))
-        self.export_fmt_combo.setCurrentText(self._settings.value("export_format", "HTML"))
+        self.export_fmt_combo.setCurrentText(self._settings.value("export_format", "PDF"))
 
         cb_map = {
             self.rep_sim_cb: ("include_similarity", True),

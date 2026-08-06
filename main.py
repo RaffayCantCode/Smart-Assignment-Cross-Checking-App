@@ -7,7 +7,6 @@ together via a QStackedWidget. Implements a smooth page transition inline.
 
 import sys
 import pydoc
-import threading
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QGraphicsOpacityEffect
@@ -19,7 +18,6 @@ from gui.loading import LoadingScreen
 from gui.results import ResultsScreen
 from gui.settings import SettingsScreen
 from gui.report import ReportScreen
-from backend.engines.embedding_engine import preload_model
 
 
 class MainWindow(QMainWindow):
@@ -173,11 +171,6 @@ def main():
     app.setStyleSheet(build_stylesheet())
     window = MainWindow()
     window.show()
-
-    # Preload the AI model in the background so the first analysis doesn't
-    # stall on the loading screen. Runs once per app launch.
-    threading.Thread(target=preload_model, daemon=True).start()
-
     sys.exit(app.exec())
 
 

@@ -141,6 +141,8 @@ class Icons:
     CLOCK = _base_svg.format(color="{color}", path='<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>')
     SHIELD_ALERT = _base_svg.format(color="{color}", path='<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>')
     REFRESH = _base_svg.format(color="{color}", path='<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>')
+    PLUS = _base_svg.format(color="{color}", path='<path d="M5 12h14"/><path d="M12 5v14"/>')
+    MINUS = _base_svg.format(color="{color}", path='<path d="M5 12h14"/>')
 
 def render_icon(svg_string: str, color: str, size: int) -> QPixmap:
     """Render an SVG string to a QPixmap with the specified color and size."""

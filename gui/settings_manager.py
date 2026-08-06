@@ -33,7 +33,7 @@ def get_analysis_config() -> dict:
 def get_export_config() -> dict:
     s = _settings()
     return {
-        "export_format": str(s.value("export_format", "HTML")).lower(),
+        "export_format": str(s.value("export_format", "PDF")).lower(),
         "include_similarity": s.value("include_similarity", "true") == "true",
         "include_highlights": s.value("include_highlights", "true") == "true",
         "include_statistics": s.value("include_statistics", "true") == "true",

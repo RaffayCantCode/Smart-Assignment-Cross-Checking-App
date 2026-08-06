@@ -197,9 +197,9 @@ class UploadCard(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
 
-        title = QLabel(label)
-        title.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; font-weight: 500; color: {Colors.TEXT_PRIMARY};")
-        outer.addWidget(title)
+        self.title_label = QLabel(label)
+        self.title_label.setStyleSheet(f"font-size: {Fonts.SIZE_BODY}px; font-weight: 500; color: {Colors.TEXT_PRIMARY};")
+        outer.addWidget(self.title_label)
 
         self.drop_zone = QFrame()
         self.drop_zone.setObjectName("DropZone")
@@ -314,3 +314,7 @@ class UploadCard(QFrame):
 
     def has_file(self) -> bool:
         return self.file_path is not None
+
+    def set_title(self, label: str):
+        """Update the card's heading text (used when renumbering one-to-many slots)."""
+        self.title_label.setText(label)
