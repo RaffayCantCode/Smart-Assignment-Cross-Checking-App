@@ -68,15 +68,44 @@ class AnalysisWorker(QThread):
             mode = self.payload.get("mode", "one_to_one")
             files = self.payload.get("files", {})
             
+            def _missing_files_error(msg: str) -> dict:
+                return {
+                    "score": 0,
+                    "risk_level": "Error",
+                    "risk_color": "#E63946",
+                    "matching_sections": 0,
+                    "similar_paragraphs": 0,
+                    "processing_time": "0.0s",
+                    "confidence_score": "0%",
+                    "summary": msg,
+                    "error": True,
+                }
+            
             if mode == "one_to_one":
                 file_path_1 = files.get("student_1")
                 file_path_2 = files.get("student_2")
                 if not file_path_1 or not file_path_2:
-                    result = analyzer._error_result("Missing files for one-to-one comparison.")
+                    result = _missing_files_error(
+                        "Missing files for one-to-one comparison."
+                    )
                 else:
                     result = analyzer.analyze_one_to_one(file_path_1, file_path_2)
             else:
-                result = analyzer._error_result(f"Mode {mode} not yet supported by backend.")
+                reference = files.get("main")
+                comparison_paths = [
+                    path for slot, path in files.items()
+                    if slot != "main" and path
+                ]
+                if not reference or not comparison_paths:
+                    result = _missing_files_error(
+                        "Missing files for one-to-many comparison "
+                        "(reference document and at least one comparison "
+                        "document are required)."
+                    )
+                else:
+                    result = analyzer.analyze_one_to_many(
+                        reference, comparison_paths
+                    )
                 
             self.analysis_finished.emit(result)
         except Exception as e:

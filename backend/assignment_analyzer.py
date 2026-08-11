@@ -8,7 +8,7 @@ from typing import Callable, Optional
 from .extraction import DocumentLoader
 from .engines import EngineRegistry, EngineConfig
 from .domain.document import Document, DocumentSource, DocumentContent, ExtractionInfo, ExtractionMethod
-from .domain.comparison import ComparisonResult, MetadataWarning
+from .domain.comparison import ComparisonResult, MetadataWarning, MultiComparisonResult, SimilarityBand
 from .utils import AssignmentAnalyzerError
 
 ProgressCallback = Callable[[int, str], None]
@@ -99,6 +99,208 @@ class AssignmentAnalyzer:
         
         self.last_result = enriched
         return enriched.to_legacy_dict()
+
+    def analyze_one_to_many(
+        self,
+        reference_path: str,
+        comparison_paths: list[str],
+    ) -> dict:
+        """
+        Orchestrates a one-to-many cross-check.
+
+        The reference document is loaded once and independently compared
+        against every document in `comparison_paths` using the SAME engine
+        that powers One-to-One comparisons. Results retain the input order
+        (deterministic). A failure on any single comparison document does
+        NOT abort the batch: the failed pair is recorded and processing
+        continues with the remaining documents.
+        """
+        start_time = time.time()
+
+        self._progress(5, "Preparing assignments...")
+
+        try:
+            engine = EngineRegistry.get(self.engine_id)
+        except Exception as e:
+            return self._create_multi_error_dict(
+                reference_path, comparison_paths, str(e), start_time
+            )
+
+        comparison_paths = list(comparison_paths or [])
+        if not comparison_paths:
+            return self._create_multi_error_dict(
+                reference_path, comparison_paths,
+                "No comparison documents were provided.", start_time,
+            )
+
+        try:
+            doc_ref = self._loader.load(
+                reference_path,
+                self._sub_progress(5, 15, "Reading reference document"),
+                self.config,
+            )
+        except Exception as e:
+            return self._create_multi_error_dict(
+                reference_path, comparison_paths,
+                f"Failed to read reference document: {e}", start_time,
+            )
+
+        if doc_ref.is_empty:
+            return self._create_multi_error_dict(
+                reference_path, comparison_paths,
+                f"Reference document '{doc_ref.file_name}' appears empty "
+                "or contains no readable text.", start_time,
+            )
+
+        # Progress windows: each pair gets an equal slice of [20, 85], then
+        # 90 = compile, and the pipeline reports 100 = finished.
+        total = len(comparison_paths)
+        share = 65.0 / total
+        pairs: list[ComparisonResult] = []
+        successful = 0
+
+        for idx, path in enumerate(comparison_paths):
+            pair_label = os.path.basename(path)
+            w_start = int(20 + idx * share)
+            w_end = int(20 + (idx + 1) * share)
+            mid = w_start + (w_end - w_start) // 2
+            self._progress(w_start, f"Comparing assignment {idx + 1} of {total}")
+
+            try:
+                doc_cmp = self._loader.load(
+                    path,
+                    self._sub_progress(w_start, mid, f"Reading comparison {idx + 1}"),
+                    self.config,
+                )
+            except Exception as e:
+                pairs.append(ComparisonResult.error_result(
+                    doc_ref, None,
+                    f"Failed to read '{pair_label}': {e}",
+                    self.engine_id, time.time() - start_time,
+                ))
+                continue
+
+            if doc_cmp.is_empty:
+                pairs.append(ComparisonResult.error_result(
+                    doc_ref, doc_cmp,
+                    f"Document '{doc_cmp.file_name}' appears empty "
+                    "or contains no readable text.",
+                    self.engine_id, time.time() - start_time,
+                ))
+                continue
+
+            try:
+                pair_result = engine.compare(
+                    doc_ref, doc_cmp, self.config,
+                    progress_callback=self._sub_progress(
+                        mid, w_end, f"Comparing {idx + 1} of {total}"
+                    ),
+                )
+            except Exception as e:
+                pairs.append(ComparisonResult.error_result(
+                    doc_ref, doc_cmp,
+                    f"Comparison failed for '{pair_label}': {e}",
+                    self.engine_id, time.time() - start_time,
+                ))
+                continue
+
+            if pair_result.error:
+                pairs.append(pair_result)
+                continue
+
+            warnings = self._check_metadata(doc_ref, doc_cmp)
+            pairs.append(self._enrich(pair_result, warnings, time.time() - start_time))
+            successful += 1
+
+        self._progress(90, "Compiling results")
+
+        overall = MultiComparisonResult(
+            mode="one_to_many",
+            main_doc=doc_ref,
+            pairs=tuple(pairs),
+            highest_score_percent=max(
+                (p.statistics.score_percent for p in pairs if not p.error),
+                default=0,
+            ),
+            average_score_percent=int(
+                sum(p.statistics.score_percent for p in pairs if not p.error)
+                / successful
+            ) if successful else 0,
+            overall_band=SimilarityBand.from_score(
+                max(
+                    (p.statistics.score_percent for p in pairs if not p.error),
+                    default=0,
+                ) / 100
+            ),
+            overall_summary=self._generate_batch_summary(
+                total, successful, pairs, start_time,
+            ),
+            total_processing_time_s=time.time() - start_time,
+            error=successful == 0,
+            error_message=(
+                None if successful == total else
+                f"{total - successful} comparison(s) failed; see individual results."
+            ),
+        )
+
+        self.last_result = overall
+        self._progress(100, "Finished")
+        return overall.to_legacy_dict()
+
+    def _generate_batch_summary(
+        self,
+        total: int,
+        successful: int,
+        pairs: list[ComparisonResult],
+        start_time: float,
+    ) -> str:
+        valid = [p for p in pairs if not p.error]
+        highest = max((p.statistics.score_percent for p in valid), default=0)
+        average = int(
+            sum(p.statistics.score_percent for p in valid) / len(valid)
+        ) if valid else 0
+
+        summary = (
+            f"Compared the reference assignment against {total} "
+            f"assignment(s). {successful} comparison(s) completed successfully. "
+            f"Highest similarity: {highest}%. Average similarity: {average}%."
+        )
+
+        if highest >= 70:
+            summary += " One or more assignments share a highly significant amount of semantic meaning."
+        elif highest >= 40:
+            summary += " One or more assignments show moderate semantic overlap."
+        else:
+            summary += " No significant semantic overlap was detected across the batch."
+
+        if successful < total:
+            summary += (
+                f" Warning: {total - successful} comparison(s) could not be "
+                "completed (see individual results for details)."
+            )
+        return summary
+
+    def _create_multi_error_dict(
+        self,
+        reference_path: str,
+        comparison_paths: list[str],
+        msg: str,
+        start_time: float,
+    ) -> dict:
+        overall = MultiComparisonResult(
+            mode="one_to_many",
+            main_doc=None,
+            pairs=(),
+            highest_score_percent=0,
+            average_score_percent=0,
+            overall_band=SimilarityBand.LOW,
+            overall_summary=f"Processing failed: {msg}",
+            total_processing_time_s=time.time() - start_time,
+            error=True,
+            error_message=msg,
+        )
+        self.last_result = overall
+        return overall.to_legacy_dict()
 
     def _create_error_dict(self, path1: str, path2: str, msg: str, start_time: float, doc_a: Optional[Document] = None) -> dict:
         elapsed = time.time() - start_time

@@ -1,7 +1,9 @@
 """
 gui/results.py
 
-The results dashboard. All values shown here are placeholder/fake data.
+The results dashboard. For One-to-One it shows a single comparison summary;
+for One-to-Many it shows the aggregate summary plus one action card per
+comparison, each reusing the existing detailed-report/export pipeline.
 """
 
 from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer
@@ -113,6 +115,103 @@ class InfoCard(QFrame):
         layout.addStretch()
 
 
+def _risk_color_for_score(score: int) -> str:
+    """Shared risk colouring so multi rows match the top-level risk badge."""
+    if score >= 70:
+        return Colors.DANGER
+    if score >= 40:
+        return Colors.WARNING
+    return Colors.SUCCESS
+
+
+class ComparisonRowCard(QFrame):
+    """One selectable comparison in a One-to-Many result list.
+
+    Actions (Detailed Report / Generate Report) re-emit the pair's raw
+    ComparisonResult so the existing single-comparison pipeline is reused.
+    """
+    detailed_requested = Signal(object)
+    export_requested = Signal(object)
+
+    def __init__(self, title, similarity_pct, confidence, matches, error,
+                 error_message="", raw_result=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self.raw_result = raw_result
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(Spacing.LG, Spacing.MD, Spacing.LG, Spacing.MD)
+        lay.setSpacing(Spacing.LG)
+
+        # Identity
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        name_lbl = QLabel(title)
+        name_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_BODY_LG}px; font-weight: 600; "
+            f"color: {Colors.TEXT_PRIMARY}; background: transparent;"
+        )
+        text_col.addWidget(name_lbl)
+        if error:
+            err_lbl = QLabel(f"FAILED — {error_message}")
+            err_lbl.setWordWrap(True)
+            err_lbl.setStyleSheet(
+                f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.DANGER}; "
+                f"background: transparent;"
+            )
+            text_col.addWidget(err_lbl)
+        lay.addLayout(text_col)
+        lay.addStretch()
+
+        # Metrics
+        if error:
+            sim_val, conf_val, match_val = "--", "--", "--"
+        else:
+            sim_val, conf_val, match_val = f"{similarity_pct}%", confidence, str(matches)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(Spacing.XL)
+        metrics.addLayout(self._metric("Similarity", sim_val, _risk_color_for_score(similarity_pct)))
+        metrics.addLayout(self._metric("Confidence", conf_val, Colors.ACCENT))
+        metrics.addLayout(self._metric("Matches", match_val, Colors.TEXT_SECONDARY))
+        lay.addLayout(metrics)
+
+        # Actions
+        actions = QHBoxLayout()
+        actions.setSpacing(Spacing.SM)
+        det_btn = QPushButton("Detailed Report")
+        det_btn.setObjectName("SecondaryButton")
+        det_btn.setCursor(Qt.PointingHandCursor)
+        gen_btn = QPushButton("Generate Report")
+        gen_btn.setObjectName("PrimaryButton")
+        gen_btn.setCursor(Qt.PointingHandCursor)
+        if error:
+            det_btn.setEnabled(False)
+            gen_btn.setEnabled(False)
+        det_btn.clicked.connect(lambda: self.detailed_requested.emit(self.raw_result))
+        gen_btn.clicked.connect(lambda: self.export_requested.emit(self.raw_result))
+        actions.addWidget(det_btn)
+        actions.addWidget(gen_btn)
+        lay.addLayout(actions)
+
+    @staticmethod
+    def _metric(label, value, color):
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        val_lbl = QLabel(value)
+        val_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_H2}px; font-weight: 700; "
+            f"color: {color}; background: transparent;"
+        )
+        col.addWidget(val_lbl)
+        cap_lbl = QLabel(label)
+        cap_lbl.setStyleSheet(
+            f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED}; "
+            f"background: transparent;"
+        )
+        col.addWidget(cap_lbl)
+        return col
+
+
 class ResultsScreen(QWidget):
 
     restart_requested = Signal()
@@ -122,6 +221,7 @@ class ResultsScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_raw_result = None
+        self._last_result_dict = None
         # Keep strong refs to all active animations so Qt doesn't GC them
         self._active_anims: list = []
 
@@ -173,6 +273,22 @@ class ResultsScreen(QWidget):
         self.info_grid = QGridLayout()
         self.info_grid.setSpacing(Spacing.LG)
         self.root.addLayout(self.info_grid)
+
+        # -- One-to-Many comparison list ---------------------------------------
+        self.multi_header = QLabel("Comparison Results")
+        self.multi_header.setStyleSheet(
+            f"font-size: {Fonts.SIZE_H3}px; font-weight: 600; color: {Colors.TEXT_PRIMARY};"
+        )
+        self.multi_header.setVisible(False)
+        self.root.addWidget(self.multi_header)
+
+        self.multi_container = QWidget()
+        self.multi_container.setVisible(False)
+        self.multi_list = QVBoxLayout(self.multi_container)
+        self.multi_list.setContentsMargins(0, 0, 0, 0)
+        self.multi_list.setSpacing(Spacing.MD)
+        self.multi_list.setAlignment(Qt.AlignTop)
+        self.root.addWidget(self.multi_container)
 
         # -- AI summary card ---------------------------------------------------
         self.summary_card = QFrame()
@@ -245,12 +361,16 @@ class ResultsScreen(QWidget):
         self.root.addLayout(bottom_row)
 
     def generate_report(self):
-        if not self._last_raw_result:
-            return
-        model = ReportBuilder.build(self._last_raw_result)
+        if self._last_raw_result:
+            self._export_raw(self._last_raw_result, include_right=False)
+
+    def _export_raw(self, raw_result, include_right=False):
+        model = ReportBuilder.build(raw_result)
         export_cfg = get_export_config()
         default_fmt = export_cfg.get("export_format", "pdf")
         assignment_name = model.left_document.title or "Assignment"
+        if include_right and model.right_document and model.right_document.title:
+            assignment_name = f"{assignment_name} vs {model.right_document.title}"
         suggested_name = build_report_filename(assignment_name, default_fmt)
 
         file_path, selected_filter = QFileDialog.getSaveFileName(
@@ -271,15 +391,69 @@ class ResultsScreen(QWidget):
         if self._last_raw_result:
             self.report_requested.emit(self._last_raw_result)
 
+    def _on_pair_detailed(self, raw_result):
+        if raw_result:
+            self.report_requested.emit(raw_result)
+
+    def _on_pair_export(self, raw_result):
+        if raw_result:
+            self._export_raw(raw_result, include_right=True)
+
+    def _clear_multi_list(self):
+        while self.multi_list.count():
+            item = self.multi_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _build_multi_rows(self, result: dict):
+        pairs = result.get("pairs", [])
+        if not pairs:
+            self.multi_header.setVisible(False)
+            self.multi_container.setVisible(False)
+            return
+
+        reference_name = ""
+        first_raw = pairs[0].get("raw_result")
+        if first_raw and getattr(first_raw, "doc_a", None):
+            reference_name = first_raw.doc_a.file_name
+        self.multi_header.setText(
+            f"Comparison Results" + (f" — Reference: {reference_name}" if reference_name else "")
+        )
+        self.multi_header.setVisible(True)
+
+        self._clear_multi_list()
+        for idx, pair in enumerate(pairs):
+            raw = pair.get("raw_result")
+            error = bool(pair.get("error"))
+            title = f"Submission {idx + 1}"
+            if raw and getattr(raw, "doc_b", None):
+                title = raw.doc_b.file_name
+            row = ComparisonRowCard(
+                title=title,
+                similarity_pct=int(pair.get("score", 0)),
+                confidence=pair.get("confidence_score", "0%"),
+                matches=pair.get("similar_paragraphs", 0),
+                error=error,
+                error_message=pair.get("summary", "Analysis failed"),
+                raw_result=raw,
+            )
+            row.detailed_requested.connect(self._on_pair_detailed)
+            row.export_requested.connect(self._on_pair_export)
+            self.multi_list.addWidget(row)
+        self.multi_container.setVisible(True)
+
 
     def display_results(self, result: dict):
         self._last_raw_result = result.get("raw_result")
+        self._last_result_dict = result
         # Kill any running animations from a previous run
         for anim in self._active_anims:
             anim.stop()
         self._active_anims.clear()
 
         is_error = result.get("error", False)
+        is_multi = bool(result.get("pairs"))
+        self._clear_multi_list()
         
         # Set risk badge
         self.risk_badge.setText(result.get("risk_level", "Unknown"))
@@ -295,7 +469,20 @@ class ResultsScreen(QWidget):
         """)
 
         self.summary_text.setText(result.get("summary", ""))
-        
+
+        if is_multi:
+            # One-to-Many: summary dashboard plus one identical action card per
+            # comparison. Each row reuses the single-comparison report pipeline.
+            if is_error:
+                self.score_ring.setVisible(False)
+            else:
+                self.score_ring.setVisible(True)
+                self.score_ring.set_score(result.get("score", 0), risk_color)
+            self.generate_report_btn.setVisible(False)
+            self.detailed_report_btn.setVisible(False)
+            self._build_multi_rows(result)
+            return
+
         if is_error:
             self.score_ring.setVisible(False)
             self.generate_report_btn.setVisible(False)
