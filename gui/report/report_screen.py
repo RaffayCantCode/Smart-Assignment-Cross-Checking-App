@@ -240,7 +240,7 @@ class _Toolbar(QFrame):
 
         layout.addSpacing(Spacing.MD)
 
-        self.btn_export = QPushButton("Export")
+        self.btn_export = QPushButton("Generate PDF Report")
         self.btn_export.setObjectName("PrimaryButton")
         self.btn_export.clicked.connect(self.export_requested.emit)
         layout.addWidget(self.btn_export)
@@ -472,11 +472,15 @@ class ReportScreen(QWidget):
         self._rebuild_report_header(model)
         self._rebuild_stats_bar(model)
 
-        # Clear previous workspace panels
-        for i in reversed(range(self.splitter.count())):
-            w = self.splitter.widget(i)
-            if w:
-                w.deleteLater()
+        # Clear previous workspace panels.  The panels must be detached from
+        # the splitter *synchronously* before re-adding, otherwise the deferred
+        # deleteLater() leaves stale panels inside the splitter and the two
+        # document panes end up mis-laid-out (Document B pushed off) on
+        # repeat loads of the same report.
+        while self.splitter.count():
+            w = self.splitter.widget(0)
+            w.setParent(None)
+            w.deleteLater()
 
         # Document panels — expose .viewer for signal wiring below
         left_panel = _DocPanel(model.left_document, "DOCUMENT A")
@@ -500,6 +504,14 @@ class ReportScreen(QWidget):
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
         self.splitter.setCollapsible(2, False)
+
+        # Equal-weight document panes (1:1:0) guarantee Document A and B are
+        # always laid out side by side and share the available width evenly,
+        # regardless of document length or window size.  The sidebar keeps
+        # its natural width and never steals space from the documents.
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
 
         # Initial proportions: 40 % / 40 % / 20 %
         self.splitter.setSizes([400, 400, 240])
@@ -651,8 +663,12 @@ class ReportScreen(QWidget):
         if not self._report_model:
             return
         export_cfg = get_export_config()
-        default_fmt = export_cfg.get("export_format", "html")
+        default_fmt = export_cfg.get("export_format", "pdf")
         assignment_name = self._report_model.left_document.title or "Assignment"
+        if self._report_model.right_document and self._report_model.right_document.title:
+            assignment_name = (
+                f"{assignment_name} vs {self._report_model.right_document.title}"
+            )
         suggested_name = build_report_filename(assignment_name, default_fmt)
 
         file_path, selected_filter = QFileDialog.getSaveFileName(

@@ -24,10 +24,10 @@ def normalize_export_format(fmt: str) -> str:
     fmt = fmt.lower().lstrip(".")
     if fmt == "text":
         fmt = "txt"
-    return fmt if fmt in _FORMAT_FILTERS else "html"
+    return fmt if fmt in _FORMAT_FILTERS else "pdf"
 
 
-def build_report_filename(assignment_name: str, fmt: str = "html") -> str:
+def build_report_filename(assignment_name: str, fmt: str = "pdf") -> str:
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H-%M")
@@ -36,7 +36,7 @@ def build_report_filename(assignment_name: str, fmt: str = "html") -> str:
     return f"Similarity_Report_{safe_name}_{date_str}_{time_str}.{ext}"
 
 
-def build_save_file_filter(default_fmt: str = "html") -> str:
+def build_save_file_filter(default_fmt: str = "pdf") -> str:
     default = normalize_export_format(default_fmt)
     order = ["pdf", "html", "txt"]
     order.remove(default)
@@ -47,7 +47,7 @@ def build_save_file_filter(default_fmt: str = "html") -> str:
 def resolve_export_extension(
     file_path: str,
     selected_filter: str,
-    fallback_fmt: str = "html",
+    fallback_fmt: str = "pdf",
 ) -> Tuple[str, str]:
     ext = os.path.splitext(file_path)[1].lower().lstrip(".")
     if ext in ("pdf", "html", "txt", "text"):
@@ -256,7 +256,7 @@ def _build_text(model: ReportModel, options: Optional[dict] = None) -> str:
 def export_report(
     model: ReportModel,
     file_path: str,
-    fmt: str = "html",
+    fmt: str = "pdf",
     options: Optional[dict] = None,
 ) -> str:
     fmt = fmt.lower().lstrip(".")

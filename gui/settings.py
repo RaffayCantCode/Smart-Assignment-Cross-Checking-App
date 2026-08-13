@@ -367,7 +367,11 @@ class SettingsScreen(QWidget):
 
     def _load_settings(self):
         self.thresh_slider.setValue(int(self._settings.value("similarity_threshold", 75, type=int)))
-        self.export_fmt_combo.setCurrentText(self._settings.value("export_format", "PDF"))
+        stored_fmt = str(self._settings.value("export_format", "PDF")).upper()
+        idx = self.export_fmt_combo.findText(stored_fmt)
+        if idx < 0:
+            idx = self.export_fmt_combo.findText("PDF")
+        self.export_fmt_combo.setCurrentIndex(idx)
 
         cb_map = {
             self.rep_sim_cb: ("include_similarity", True),

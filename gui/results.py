@@ -22,6 +22,7 @@ from backend.reporting.exporter import (
     resolve_export_extension,
 )
 from gui.settings_manager import get_export_config
+from gui.result_utils import derive_student_identity
 
 
 
@@ -216,12 +217,14 @@ class ResultsScreen(QWidget):
 
     restart_requested = Signal()
     new_check_requested = Signal()
+    back_requested = Signal()
     report_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_raw_result = None
         self._last_result_dict = None
+        self._is_summary_mode = False
         # Keep strong refs to all active animations so Qt doesn't GC them
         self._active_anims: list = []
 
@@ -242,16 +245,37 @@ class ResultsScreen(QWidget):
 
         # -- top bar ---------------------------------------------------------
         top_bar = QHBoxLayout()
-        title = QLabel("Cross-Checking Results")
-        title.setStyleSheet(f"font-size: {Fonts.SIZE_H2}px; font-weight: 600; color: {Colors.TEXT_PRIMARY};")
-        top_bar.addWidget(title)
+        top_bar.setSpacing(Spacing.MD)
+
+        self.back_btn = QPushButton("Back to Dashboard")
+        self.back_btn.setObjectName("GhostButton")
+        self.back_btn.setCursor(Qt.PointingHandCursor)
+        self.back_btn.setIcon(render_icon(Icons.ARROW_LEFT, Colors.TEXT_PRIMARY, IconSize.SM))
+        self.back_btn.setVisible(False)
+        self.back_btn.clicked.connect(self.back_requested.emit)
+        top_bar.addWidget(self.back_btn)
+
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        self.title_label = QLabel("Cross-Checking Results")
+        self.title_label.setStyleSheet(
+            f"font-size: {Fonts.SIZE_H2}px; font-weight: 600; color: {Colors.TEXT_PRIMARY};"
+        )
+        title_block.addWidget(self.title_label)
+        self.subtitle_label = QLabel("")
+        self.subtitle_label.setVisible(False)
+        self.subtitle_label.setStyleSheet(
+            f"font-size: {Fonts.SIZE_SMALL}px; color: {Colors.TEXT_MUTED};"
+        )
+        title_block.addWidget(self.subtitle_label)
+        top_bar.addLayout(title_block)
         top_bar.addStretch()
 
-        new_check_button = QPushButton("New Check")
-        new_check_button.setObjectName("SecondaryButton")
-        new_check_button.setCursor(Qt.PointingHandCursor)
-        new_check_button.clicked.connect(self.new_check_requested.emit)
-        top_bar.addWidget(new_check_button)
+        self.new_check_button = QPushButton("New Check")
+        self.new_check_button.setObjectName("SecondaryButton")
+        self.new_check_button.setCursor(Qt.PointingHandCursor)
+        self.new_check_button.clicked.connect(self.new_check_requested.emit)
+        top_bar.addWidget(self.new_check_button)
         self.root.addLayout(top_bar)
 
         # -- hero score section ------------------------------------------------
@@ -351,18 +375,18 @@ class ResultsScreen(QWidget):
         # -- bottom actions --------------------------------------------------
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
-        restart_button = QPushButton("Run Another Check")
-        restart_button.setObjectName("SecondaryButton")
-        restart_button.setCursor(Qt.PointingHandCursor)
-        restart_button.setMinimumWidth(220)
-        restart_button.clicked.connect(self.restart_requested.emit)
-        bottom_row.addWidget(restart_button)
+        self.restart_button = QPushButton("Run Another Check")
+        self.restart_button.setObjectName("SecondaryButton")
+        self.restart_button.setCursor(Qt.PointingHandCursor)
+        self.restart_button.setMinimumWidth(220)
+        self.restart_button.clicked.connect(self.restart_requested.emit)
+        bottom_row.addWidget(self.restart_button)
         bottom_row.addStretch()
         self.root.addLayout(bottom_row)
 
     def generate_report(self):
         if self._last_raw_result:
-            self._export_raw(self._last_raw_result, include_right=False)
+            self._export_raw(self._last_raw_result, include_right=self._is_summary_mode)
 
     def _export_raw(self, raw_result, include_right=False):
         model = ReportBuilder.build(raw_result)
@@ -443,9 +467,10 @@ class ResultsScreen(QWidget):
         self.multi_container.setVisible(True)
 
 
-    def display_results(self, result: dict):
+    def display_results(self, result: dict, dashboard_summary: bool = False):
         self._last_raw_result = result.get("raw_result")
         self._last_result_dict = result
+        self._is_summary_mode = dashboard_summary
         # Kill any running animations from a previous run
         for anim in self._active_anims:
             anim.stop()
@@ -470,6 +495,28 @@ class ResultsScreen(QWidget):
 
         self.summary_text.setText(result.get("summary", ""))
 
+        # Dashboard summary mode: refit the top bar + bottom actions to the
+        # per-assignment context (Back to Dashboard, labelled title/subtitle).
+        self.back_btn.setVisible(dashboard_summary)
+        self.new_check_button.setVisible(not dashboard_summary)
+        self.restart_button.setVisible(not dashboard_summary)
+        self.title_label.setText(
+            "Assignment Summary" if dashboard_summary else "Cross-Checking Results"
+        )
+        fresh = dashboard_summary and not is_error
+        self.subtitle_label.setVisible(fresh)
+        if fresh:
+            raw = result.get("raw_result")
+            student = getattr(raw, "doc_b", None) or getattr(raw, "doc_a", None)
+            name, sid = derive_student_identity(student)
+            ref = getattr(getattr(raw, "doc_a", None), "file_name", None) or ""
+            parts = []
+            if name:
+                parts.append(f"Student — {name}" + (f"  ·  {sid}" if sid else ""))
+            if ref:
+                parts.append(f"Reference — {ref}")
+            self.subtitle_label.setText("  ·  ".join(parts) if parts else "")
+
         if is_multi:
             # One-to-Many: summary dashboard plus one identical action card per
             # comparison. Each row reuses the single-comparison report pipeline.
@@ -482,6 +529,9 @@ class ResultsScreen(QWidget):
             self.detailed_report_btn.setVisible(False)
             self._build_multi_rows(result)
             return
+
+        self.multi_header.setVisible(False)
+        self.multi_container.setVisible(False)
 
         if is_error:
             self.score_ring.setVisible(False)

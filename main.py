@@ -1,8 +1,9 @@
 """
 main.py
 
-Entry point. Wires the six screens (home, upload, loading, results, settings, report)
-together via a QStackedWidget. Implements a smooth page transition inline.
+Entry point. Wires the seven screens (home, upload, loading, results,
+dashboard, settings, report) together via a QStackedWidget. Implements a
+smooth page transition inline.
 """
 
 import sys
@@ -16,6 +17,7 @@ from gui.home import HomeScreen
 from gui.upload import UploadScreen
 from gui.loading import LoadingScreen
 from gui.results import ResultsScreen
+from gui.dashboard import OneToManyDashboardScreen
 from gui.settings import SettingsScreen
 from gui.report import ReportScreen
 
@@ -50,6 +52,7 @@ class MainWindow(QMainWindow):
         self.upload_screen = UploadScreen()
         self.loading_screen = LoadingScreen()
         self.results_screen = ResultsScreen()
+        self.dashboard_screen = OneToManyDashboardScreen()
         self.settings_screen = SettingsScreen()
         self.report_screen = ReportScreen()
 
@@ -58,6 +61,7 @@ class MainWindow(QMainWindow):
             self.upload_screen,
             self.loading_screen,
             self.results_screen,
+            self.dashboard_screen,
             self.settings_screen,
             self.report_screen,
         ):
@@ -78,10 +82,17 @@ class MainWindow(QMainWindow):
         
         self.results_screen.restart_requested.connect(self._go_to_recheck)
         self.results_screen.new_check_requested.connect(self._go_to_home)
-        self.results_screen.report_requested.connect(self._go_to_report)
+        self.results_screen.back_requested.connect(self._go_to_dashboard)
+        self.results_screen.report_requested.connect(
+            lambda raw: self._go_to_report(raw)
+        )
+
+        self.dashboard_screen.restart_requested.connect(self._go_to_recheck)
+        self.dashboard_screen.new_check_requested.connect(self._go_to_home)
+        self.dashboard_screen.report_requested.connect(self._go_to_summary)
 
         self.settings_screen.back_requested.connect(self._go_to_home)
-        self.report_screen.back_requested.connect(self._go_to_results_display)
+        self.report_screen.back_requested.connect(self._on_report_back)
         self.settings_screen.theme_changed.connect(self._on_theme_changed)
 
         if initial:
@@ -154,11 +165,32 @@ class MainWindow(QMainWindow):
         self.loading_screen.start(payload)
 
     def _go_to_results(self, payload: dict):
-        self.results_screen.display_results(payload)
+        if payload.get("pairs"):
+            # One-to-Many → dedicated results dashboard (not the One-to-One page).
+            self.dashboard_screen.display_results(payload)
+            self._fade_to(self.dashboard_screen)
+        else:
+            self.results_screen.display_results(payload)
+            self._fade_to(self.results_screen)
+
+    def _on_report_back(self):
+        """Return from the detailed report. The report is always launched from
+        the results page (either a one-to-one result or a per-assignment
+        dashboard summary), so back simply returns to it."""
         self._fade_to(self.results_screen)
 
-    def _go_to_results_display(self):
+    def _go_to_summary(self, raw_result):
+        """Dashboard ▸ per-assignment summary. Renders the single comparison
+        in the One-to-One results layout (score ring, cards, AI summary),
+        fitted for the dashboard context with a 'Back to Dashboard' button."""
+        if raw_result is None:
+            return
+        data = raw_result.to_legacy_dict()
+        self.results_screen.display_results(data, dashboard_summary=True)
         self._fade_to(self.results_screen)
+
+    def _go_to_dashboard(self):
+        self._fade_to(self.dashboard_screen)
 
     def _go_to_report(self, raw_result):
         self.report_screen.load_comparison(raw_result)

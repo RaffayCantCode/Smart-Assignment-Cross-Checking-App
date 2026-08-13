@@ -143,6 +143,12 @@ class Icons:
     REFRESH = _base_svg.format(color="{color}", path='<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>')
     PLUS = _base_svg.format(color="{color}", path='<path d="M5 12h14"/><path d="M12 5v14"/>')
     MINUS = _base_svg.format(color="{color}", path='<path d="M5 12h14"/>')
+    SEARCH = _base_svg.format(color="{color}", path='<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>')
+    TRIANGLE_ALERT = _base_svg.format(color="{color}", path='<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>')
+    INFO = _base_svg.format(color="{color}", path='<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>')
+    USER = _base_svg.format(color="{color}", path='<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>')
+    USERS = _base_svg.format(color="{color}", path='<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>')
+    FILTER = _base_svg.format(color="{color}", path='<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>')
 
 def render_icon(svg_string: str, color: str, size: int) -> QPixmap:
     """Render an SVG string to a QPixmap with the specified color and size."""
