@@ -4,11 +4,24 @@ backend/text_preprocessing.py
 Cleans and tokenizes extracted text.
 """
 
+import os
 import re
+import sys
+
 try:
     import nltk
-    # Ensure punkt is available
-    # nltk.download('punkt', quiet=True) # Usually it's better to download once during installation
+    # Dynamically register bundled and local nltk_data search paths
+    base_dirs = [
+        getattr(sys, '_MEIPASS', ''),
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..')),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_internal')),
+    ]
+    for b in base_dirs:
+        if b:
+            p = os.path.join(b, 'nltk_data')
+            if os.path.isdir(p) and p not in nltk.data.path:
+                nltk.data.path.insert(0, p)
 except ImportError:
     nltk = None
 
@@ -110,23 +123,26 @@ def extract_paragraphs(text: str) -> list[str]:
 def tokenize_sentences(text: str) -> list[str]:
     """
     Tokenizes text into individual sentences using NLTK if available.
-    Falls back to a simple regex splitter if NLTK is missing.
+    Falls back gracefully to a robust regex-based splitter if NLTK data is not available.
     """
     if not text:
         return []
-        
+
     if nltk:
         try:
             return nltk.tokenize.sent_tokenize(text)
-        except LookupError:
-            # In case punkt is not downloaded
-            nltk.download('punkt', quiet=True)
-            nltk.download('punkt_tab', quiet=True)
-            return nltk.tokenize.sent_tokenize(text)
-            
-    # Fallback basic regex splitting if NLTK completely unavailable
-    # Splits on . ! ? followed by space and capital letter, or end of string
-    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z]|$)', text)
+        except Exception:
+            try:
+                nltk.download('punkt_tab', quiet=True)
+                nltk.download('punkt', quiet=True)
+                return nltk.tokenize.sent_tokenize(text)
+            except Exception:
+                pass
+
+    # High-accuracy regex sentence splitter that splits on sentence end punctuation followed by spaces
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if not sentences or (len(sentences) == 1 and len(text) > 200 and '\n' in text):
+        sentences = [line.strip() for line in text.splitlines() if line.strip()]
     return [s.strip() for s in sentences if s.strip()]
 
 

@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['C:\\Users\\Raffay\\Documents\\GitHub\\Smart-Assignment-Cross-Checking-App\\Setup.py'],
+    ['C:\\Users\\Raffay\\Documents\\GitHub\\Smart-Assignment-Cross-Checking-App\\uninstall.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\Raffay\\Documents\\GitHub\\Smart-Assignment-Cross-Checking-App\\build\\SmartAssignmentChecker-App.zip', '.')],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='setup',
+    name='uninstall',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import zipfile
 import shutil
 import subprocess
@@ -15,22 +16,19 @@ Setup.py
 
 The installer. When a user runs this (as setup.exe or via `python Setup.py`),
 it installs the Smart Assignment Cross-Checking App into a folder containing
-SmartAssignmentChecker.exe and every supporting file.
+SmartAssignmentChecker.exe, uninstall.exe, and every supporting file.
 
 The app package (SmartAssignmentChecker-App.zip) is located from:
   1. Inside this frozen executable (bundled by build_setup.py via --add-data).
   2. Next to this script.
   3. The project's dist/ folder.
   4. A ready-made dist/SmartAssignmentChecker/ application folder.
-
-You normally never edit this file - re-run `python build_setup.py` to produce a
-fresh shareable setup.exe.
 """
 
 APP_NAME = "Smart Assignment Checker"
 LAUNCHER = "SmartAssignmentChecker.exe"
 APP_FOLDER_NAME = "SmartAssignmentChecker"
-PACKAGE_ZIP = "SmartAssignmentChecker-Source.zip"
+PACKAGE_ZIPS = ["SmartAssignmentChecker-App.zip", "SmartAssignmentChecker-Source.zip"]
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
@@ -67,6 +65,23 @@ class Radius:
     LG = 12
 
 
+def _get_check_icon_path() -> str:
+    """Returns a temporary path to a clean SVG checkmark for checkboxes."""
+    icon_path = os.path.join(tempfile.gettempdir(), "sac_check_icon.svg")
+    svg_content = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+        'viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" '
+        'stroke-linecap="round" stroke-linejoin="round">'
+        '<polyline points="20 6 9 17 4 12"></polyline></svg>'
+    )
+    try:
+        with open(icon_path, "w", encoding="utf-8") as f:
+            f.write(svg_content)
+    except Exception:
+        pass
+    return icon_path.replace("\\", "/")
+
+
 # ----------------------------------------------------------------------
 # Locate the installable package
 # ----------------------------------------------------------------------
@@ -84,16 +99,17 @@ def resolve_package_path():
         if d in seen:
             continue
         seen.add(d)
-        candidate = os.path.join(d, PACKAGE_ZIP)
-        if os.path.isfile(candidate):
-            return candidate
+        for pkg_name in PACKAGE_ZIPS:
+            candidate = os.path.join(d, pkg_name)
+            if os.path.isfile(candidate):
+                return candidate
 
     for d in search_dirs:
         if d in seen:
             continue
         seen.add(d)
         folder = os.path.join(d, APP_FOLDER_NAME)
-        if os.path.isfile(os.path.join(folder, "main.py")):
+        if os.path.isfile(os.path.join(folder, LAUNCHER)) or os.path.isfile(os.path.join(folder, "main.py")):
             return folder
     return None
 
@@ -163,9 +179,10 @@ class SetupWizard(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — Setup")
-        self.setFixedSize(580, 440)
+        self.setFixedSize(580, 450)
 
         self.package_source = resolve_package_path()
+        check_icon = _get_check_icon_path()
 
         local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~"))
         self.install_dir = os.path.join(local_app_data, APP_FOLDER_NAME)
@@ -190,7 +207,7 @@ class SetupWizard(QMainWindow):
                 color: white;
                 border: none;
                 border-radius: {Radius.MD}px;
-                padding: 10px 20px;
+                padding: 10px 22px;
                 font-size: {Fonts.SIZE_BODY}px;
                 font-weight: 600;
             }}
@@ -241,19 +258,24 @@ class SetupWizard(QMainWindow):
                 border-radius: 6px;
             }}
             QCheckBox {{
-                spacing: 8px;
+                spacing: 10px;
                 font-size: {Fonts.SIZE_BODY}px;
+                color: {Colors.TEXT_PRIMARY};
             }}
             QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
-                border: 1px solid {Colors.BORDER};
+                border: 1.5px solid {Colors.BORDER_LIGHT};
                 border-radius: 4px;
                 background-color: {Colors.BG_SURFACE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {Colors.ACCENT};
             }}
             QCheckBox::indicator:checked {{
                 background-color: {Colors.ACCENT};
                 border-color: {Colors.ACCENT};
+                image: url("{check_icon}");
             }}
         """)
 
@@ -462,7 +484,7 @@ class SetupWizard(QMainWindow):
     @Slot(bool, str)
     def _on_install_finished(self, success, message):
         if success:
-            self.lbl_finish_detail.setText(f"Installed to: {self.install_dir}")
+            self.lbl_finish_detail.setText(f"Installed to:\n{self.install_dir}")
             self.pages.setCurrentIndex(3)
             self.btn_next.setText("Finish")
             self.btn_next.setVisible(True)
@@ -492,35 +514,69 @@ class SetupWizard(QMainWindow):
 
     def _finalize_installation(self):
         launcher = os.path.join(self.install_dir, LAUNCHER)
-        deps_script = os.path.join(self.install_dir, "Install Dependencies.bat")
+        main_py = os.path.join(self.install_dir, "main.py")
 
-        if self.chk_shortcut.isChecked() and os.path.isfile(launcher):
+        target_exec = launcher if os.path.isfile(launcher) else None
+
+        if self.chk_shortcut.isChecked() and target_exec:
             try:
                 ps_cmd = f"""
                 $WshShell = New-Object -ComObject WScript.Shell
-                $Shortcut = $WshShell.CreateShortcut([System.IO.Path]::Combine([System.Environment]::GetFolderPath('Desktop'), '{APP_NAME}.lnk'))
-                $Shortcut.TargetPath = '{launcher}'
+                
+                # Desktop shortcut
+                $DesktopPath = [System.IO.Path]::Combine([System.Environment]::GetFolderPath('Desktop'), '{APP_NAME}.lnk')
+                $Shortcut = $WshShell.CreateShortcut($DesktopPath)
+                $Shortcut.TargetPath = '{target_exec}'
                 $Shortcut.WorkingDirectory = '{self.install_dir}'
-                $Shortcut.IconLocation = '{launcher},0'
+                $Shortcut.IconLocation = '{target_exec},0'
                 $Shortcut.Save()
+
+                # Start Menu shortcut
+                $StartMenuDir = [System.IO.Path]::Combine([System.Environment]::GetFolderPath('Programs'), '{APP_NAME}')
+                if (-not (Test-Path $StartMenuDir)) {{ New-Item -ItemType Directory -Path $StartMenuDir -Force | Out-Null }}
+                $StartMenuPath = [System.IO.Path]::Combine($StartMenuDir, '{APP_NAME}.lnk')
+                $StartShortcut = $WshShell.CreateShortcut($StartMenuPath)
+                $StartShortcut.TargetPath = '{target_exec}'
+                $StartShortcut.WorkingDirectory = '{self.install_dir}'
+                $StartShortcut.IconLocation = '{target_exec},0'
+                $StartShortcut.Save()
                 """
-                subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, check=True)
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+                )
             except Exception as e:
-                print(f"Failed to create desktop shortcut: {e}")
+                print(f"Failed to create shortcuts: {e}")
 
         if self.chk_launch.isChecked():
-            if os.path.isfile(launcher):
+            if target_exec and os.path.isfile(target_exec):
                 try:
-                    subprocess.Popen([launcher], cwd=self.install_dir)
+                    if hasattr(os, "startfile"):
+                        os.startfile(target_exec)
+                    else:
+                        subprocess.Popen(
+                            [target_exec],
+                            cwd=self.install_dir,
+                            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                        )
                 except Exception as e:
                     print(f"Failed to launch application: {e}")
-            elif os.path.isfile(deps_script):
+            elif os.path.isfile(main_py):
                 try:
-                    subprocess.Popen([deps_script], cwd=self.install_dir, shell=True)
+                    for interp in ("pythonw", "python", "py"):
+                        if shutil.which(interp):
+                            subprocess.Popen(
+                                [shutil.which(interp), main_py],
+                                cwd=self.install_dir,
+                                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+                            )
+                            break
                 except Exception as e:
-                    print(f"Failed to open dependencies installer: {e}")
+                    print(f"Failed to launch main.py: {e}")
 
         self.close()
+        QApplication.quit()
 
 
 def main():

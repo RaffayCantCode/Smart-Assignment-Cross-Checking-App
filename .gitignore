@@ -8,6 +8,12 @@ __pycache__/
 *.pyo
 *.egg-info/
 
+# NLTK corpora (downloaded at build/run time)
+nltk_data/
+
+# Large downloaded ML model weights (re-downloaded at build time)
+assets/models/
+
 # Temporary / Test files
 *.docx
 *.pdf

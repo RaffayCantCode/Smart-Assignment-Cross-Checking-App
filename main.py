@@ -6,10 +6,46 @@ dashboard, settings, report) together via a QStackedWidget. Implements a
 smooth page transition inline.
 """
 
+import os
 import sys
+import subprocess
+import multiprocessing
+
+# On Windows, ensure all subprocesses run completely silently without spawning console windows
+if sys.platform.startswith("win"):
+    _orig_popen_init = subprocess.Popen.__init__
+    def _silent_popen_init(self, *args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW
+        if "startupinfo" not in kwargs:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            kwargs["startupinfo"] = si
+        _orig_popen_init(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _silent_popen_init
+
 import pydoc
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint
+# Ensure bundled NLTK data directories are discoverable by NLTK runtime
+try:
+    import nltk
+    base_dirs = [
+        getattr(sys, '_MEIPASS', ''),
+        os.path.dirname(os.path.abspath(__file__)),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '_internal'),
+    ]
+    for b in base_dirs:
+        if b:
+            p = os.path.join(b, 'nltk_data')
+            if os.path.isdir(p) and p not in nltk.data.path:
+                nltk.data.path.insert(0, p)
+except Exception:
+    pass
+
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPoint, QSharedMemory
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QGraphicsOpacityEffect
 
 from styles.theme import build_stylesheet, Anim, apply_theme
@@ -198,12 +234,25 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
+
+    # Single-instance guard: prevent multiple processes/windows from launching simultaneously
+    shared_mem = QSharedMemory("SmartAssignmentChecker_SingleInstance_Key")
+    if not shared_mem.create(1):
+        # App is already running in another process, exit gracefully
+        sys.exit(0)
+
     apply_theme("System")
     app.setStyleSheet(build_stylesheet())
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    try:
+        shared_mem.detach()
+    except Exception:
+        pass
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

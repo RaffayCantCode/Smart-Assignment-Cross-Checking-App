@@ -14,7 +14,20 @@ class TesseractProvider(OCRProvider):
     def _check_tesseract(self):
         try:
             import sys
+            import subprocess
             import pytesseract
+            
+            # Ensure pytesseract on Windows never spawns a visible CMD console window
+            if sys.platform.startswith("win"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                pytesseract.pytesseract.subprocess_args = lambda kwargs: {
+                    **kwargs,
+                    "startupinfo": startupinfo,
+                    "creationflags": subprocess.CREATE_NO_WINDOW,
+                }
+
             # Try to find Tesseract in PATH or common Windows locations
             if not shutil.which("tesseract"):
                 common_paths = [

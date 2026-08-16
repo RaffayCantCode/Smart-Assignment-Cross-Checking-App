@@ -53,8 +53,27 @@ class EmbeddingEngine(ComparisonEngine):
         if EmbeddingEngine._shared_model is None:
             with EmbeddingEngine._load_lock:
                 if EmbeddingEngine._shared_model is None:
+                    import os
+                    import sys
                     from sentence_transformers import SentenceTransformer
-                    EmbeddingEngine._shared_model = SentenceTransformer(self.MODEL_NAME)
+                    
+                    # Check for bundled local model in assets/models/all-MiniLM-L6-v2
+                    base_dirs = [
+                        getattr(sys, '_MEIPASS', ''),
+                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')),
+                        os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '_internal')),
+                    ]
+                    local_model_path = None
+                    for b in base_dirs:
+                        if b:
+                            p = os.path.join(b, "assets", "models", "all-MiniLM-L6-v2")
+                            if os.path.isdir(p) and os.path.isfile(os.path.join(p, "config.json")):
+                                local_model_path = p
+                                break
+
+                    target = local_model_path if local_model_path else self.MODEL_NAME
+                    EmbeddingEngine._shared_model = SentenceTransformer(target)
 
     def _get_embeddings(self, texts: list[str], config: EngineConfig) -> np.ndarray:
         if not texts:
@@ -160,7 +179,12 @@ class EmbeddingEngine(ComparisonEngine):
         try:
             self._ensure_model_loaded()
         except Exception as e:
-            return ComparisonResult.error_result(doc_a, doc_b, f"Failed to load model: {e}", self.ENGINE_ID, time.time() - start_time)
+            # Automatic graceful fallback to TF-IDF Engine so comparisons always work
+            from .tfidf_engine import TFIDFEngine
+            fallback_engine = TFIDFEngine()
+            if progress_callback:
+                progress_callback(5, "Analyzing with text similarity engine")
+            return fallback_engine.compare(doc_a, doc_b, config, progress_callback)
 
         if progress_callback:
             progress_callback(3, "AI model ready")
@@ -259,7 +283,11 @@ class EmbeddingEngine(ComparisonEngine):
                 error_message=None
             )
         except Exception as e:
-            return ComparisonResult.error_result(doc_a, doc_b, f"Comparison error: {e}", self.ENGINE_ID, time.time() - start_time)
+            try:
+                from .tfidf_engine import TFIDFEngine
+                return TFIDFEngine().compare(doc_a, doc_b, config, progress_callback)
+            except Exception:
+                return ComparisonResult.error_result(doc_a, doc_b, f"Comparison error: {e}", self.ENGINE_ID, time.time() - start_time)
 
 
 def preload_model() -> None:
